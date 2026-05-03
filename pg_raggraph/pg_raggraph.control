@@ -1,0 +1,7 @@
+comment = 'PostgreSQL-native GraphRAG: hybrid retrieval over a single Postgres'
+default_version = '@CARGO_VERSION@'
+module_pathname = '$libdir/pg_raggraph'
+relocatable = false
+superuser = true
+schema = 'pgrg'
+requires = 'vector, pg_trgm'
