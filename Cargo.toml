@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["pg_raggraph", "pg_raggraph_core", "pg_raggraph_sidecar"]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/yonk-labs/pg-raggraph-rs"
+homepage = "https://github.com/yonk-labs/pg-raggraph-rs"
+authors = ["The Yonk <matt@theyonk.com>"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+pgrx = "=0.17.0"
+pgrx-tests = "=0.17.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+tracing = "0.1"
