@@ -4,6 +4,9 @@
 //! the workspace builds end-to-end.
 
 fn main() {
-    eprintln!("pg-raggraph-sidecar v{}: not yet implemented (Plan 5)", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "pg-raggraph-sidecar v{}: not yet implemented (Plan 5)",
+        env!("CARGO_PKG_VERSION")
+    );
     std::process::exit(64); // EX_USAGE
 }
