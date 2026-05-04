@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-clippy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo check (workspace, default features)
+        run: cargo check --workspace
+
+      - name: cargo clippy (core + sidecar — non-pgrx crates)
+        run: cargo clippy -p pg_raggraph_core -p pg_raggraph_sidecar -- -D warnings
+
+      - name: cargo test (core)
+        run: cargo test -p pg_raggraph_core
+
+  pgrx-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install postgres + dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 \
+                                   postgresql-17-pgvector postgresql-contrib-17
+
+      - name: install cargo-pgrx
+        run: cargo install --locked cargo-pgrx --version =0.17.0
+
+      - name: pgrx init
+        run: cargo pgrx init --pg17 $(which pg_config)
+
+      - name: pgrx test
+        run: cargo pgrx test pg17 -p pg_raggraph
