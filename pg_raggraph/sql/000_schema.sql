@@ -1,5 +1,10 @@
--- 000_schema.sql — bootstrap schema before pgrx-generated functions.
-CREATE SCHEMA IF NOT EXISTS pgrg;
+-- 000_schema.sql — bootstrap assertions before pgrx-generated functions.
+--
+-- Note: the `pgrg` schema is created automatically by PostgreSQL because the
+-- .control file sets `schema = 'pgrg'`. Manually CREATEing it here produces a
+-- non-extension-member schema that PG18 rejects with "schema pgrg is not a
+-- member of extension". So we don't create it — we just assert the
+-- prerequisite extensions are loaded.
 
 -- Required extensions (declared via .control `requires`, but harmless to assert):
 DO $$
