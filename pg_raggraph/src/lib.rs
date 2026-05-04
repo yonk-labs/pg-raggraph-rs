@@ -6,6 +6,8 @@ use pgrx::prelude::*;
 
 ::pgrx::pg_module_magic!(name, version);
 
+mod admin;
+
 ::pgrx::extension_sql_file!(
     "../sql/000_schema.sql",
     name = "bootstrap_schema",
@@ -67,8 +69,7 @@ mod tests {
 
     #[pg_test]
     fn migrations_seeded() {
-        let v: Option<i32> =
-            Spi::get_one("SELECT max(version) FROM pgrg.migrations").unwrap();
+        let v: Option<i32> = Spi::get_one("SELECT max(version) FROM pgrg.migrations").unwrap();
         assert_eq!(v, Some(1));
     }
 
@@ -77,6 +78,23 @@ mod tests {
         let n: Option<i64> =
             Spi::get_one("SELECT count(*) FROM pgrg.namespaces WHERE name = 'default'").unwrap();
         assert_eq!(n, Some(1));
+    }
+
+    #[pg_test]
+    fn namespace_create_inserts_row() {
+        Spi::run("SELECT pgrg.namespace_create('test_ns')").unwrap();
+        let n: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.namespaces WHERE name = 'test_ns'").unwrap();
+        assert_eq!(n, Some(1));
+    }
+
+    #[pg_test]
+    fn namespace_drop_removes_row() {
+        Spi::run("SELECT pgrg.namespace_create('drop_me')").unwrap();
+        Spi::run("SELECT pgrg.namespace_drop('drop_me', false)").unwrap();
+        let n: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.namespaces WHERE name = 'drop_me'").unwrap();
+        assert_eq!(n, Some(0));
     }
 }
 
