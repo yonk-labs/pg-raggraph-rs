@@ -988,6 +988,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pg_raggraph_sidecar"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "pg_raggraph_core",
+ "tracing",
+]
+
+[[package]]
 name = "pgrx"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["pg_raggraph", "pg_raggraph_core"]
+members = ["pg_raggraph", "pg_raggraph_core", "pg_raggraph_sidecar"]
 
 [workspace.package]
 version = "0.1.0-alpha.1"
