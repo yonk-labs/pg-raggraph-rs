@@ -6,6 +6,27 @@ use pgrx::prelude::*;
 
 ::pgrx::pg_module_magic!(name, version);
 
+::pgrx::extension_sql_file!(
+    "../sql/000_schema.sql",
+    name = "bootstrap_schema",
+    bootstrap
+);
+::pgrx::extension_sql_file!(
+    "../sql/001_tables.sql",
+    name = "create_tables",
+    requires = ["bootstrap_schema"]
+);
+::pgrx::extension_sql_file!(
+    "../sql/002_indexes.sql",
+    name = "create_indexes",
+    requires = ["create_tables"]
+);
+::pgrx::extension_sql_file!(
+    "../sql/003_migrations_table.sql",
+    name = "migrations_table",
+    requires = ["create_tables"]
+);
+
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
