@@ -34,8 +34,49 @@ mod tests {
 
     #[pg_test]
     fn extension_loads() {
-        // Smoke test: extension is installable and returns a known SQL true.
         assert_eq!(Spi::get_one::<bool>("SELECT true").unwrap(), Some(true));
+    }
+
+    #[pg_test]
+    fn schema_tables_exist() {
+        let tables: Vec<String> = Spi::connect(|client| {
+            let rows = client
+                .select(
+                    "SELECT tablename::text FROM pg_tables WHERE schemaname = 'pgrg' ORDER BY tablename",
+                    None,
+                    &[],
+                )
+                .unwrap();
+            rows.map(|r| r.get::<String>(1).unwrap().unwrap()).collect()
+        });
+
+        let expected: Vec<&str> = vec![
+            "chunk_entities",
+            "chunks",
+            "documents",
+            "entities",
+            "ingest_jobs",
+            "migrations",
+            "namespaces",
+            "providers",
+            "relationships",
+        ];
+        let actual: Vec<&str> = tables.iter().map(String::as_str).collect();
+        assert_eq!(actual, expected, "expected pgrg.* tables present");
+    }
+
+    #[pg_test]
+    fn migrations_seeded() {
+        let v: Option<i32> =
+            Spi::get_one("SELECT max(version) FROM pgrg.migrations").unwrap();
+        assert_eq!(v, Some(1));
+    }
+
+    #[pg_test]
+    fn default_namespace_present() {
+        let n: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.namespaces WHERE name = 'default'").unwrap();
+        assert_eq!(n, Some(1));
     }
 }
 
