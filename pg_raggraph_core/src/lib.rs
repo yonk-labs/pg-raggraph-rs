@@ -4,6 +4,7 @@
 //! extension crate (linked into the .so) and the sidecar binary.
 
 pub mod error;
+pub mod retrieval;
 pub mod types;
 
 pub use error::{CoreError, CoreResult};
