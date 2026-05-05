@@ -189,6 +189,51 @@ mod tests {
     }
 
     #[pg_test]
+    fn delete_document_removes_chunks_via_cascade() {
+        Spi::run("SELECT pgrg.namespace_create('del_doc_ns')").unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.documents (id, namespace, source, content_hash) \
+             VALUES ('11111111-1111-1111-1111-111111111111', 'del_doc_ns', 'a.md', 'hash1')",
+        )
+        .unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.chunks (namespace, document_id, ord, text, token_count) \
+             VALUES ('del_doc_ns', '11111111-1111-1111-1111-111111111111', 0, 'hi', 1)",
+        )
+        .unwrap();
+
+        Spi::run("SELECT pgrg.delete_document('11111111-1111-1111-1111-111111111111'::uuid)")
+            .unwrap();
+
+        let docs: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.documents \
+             WHERE id = '11111111-1111-1111-1111-111111111111'",
+        )
+        .unwrap();
+        assert_eq!(docs, Some(0));
+
+        let chunks: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.chunks WHERE namespace = 'del_doc_ns'")
+                .unwrap();
+        assert_eq!(chunks, Some(0), "chunks must cascade");
+    }
+
+    #[pg_test]
+    fn delete_namespace_without_cascade_blocks_when_docs_exist() {
+        Spi::run("SELECT pgrg.namespace_create('blocked_ns')").unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.documents (namespace, source, content_hash) \
+             VALUES ('blocked_ns', 'b.md', 'hashB')",
+        )
+        .unwrap();
+
+        let res = std::panic::catch_unwind(|| {
+            Spi::run("SELECT pgrg.namespace_drop('blocked_ns', false)").unwrap();
+        });
+        assert!(res.is_err(), "namespace_drop without cascade must error");
+    }
+
+    #[pg_test]
     fn gucs_have_expected_defaults() {
         let workers: Option<i32> =
             Spi::get_one("SELECT current_setting('pg_raggraph.bgw_workers')::int").unwrap();

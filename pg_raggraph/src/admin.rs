@@ -222,6 +222,26 @@ fn status(job_id: default!(Option<pgrx::Uuid>, "NULL")) -> Option<pgrx::JsonB> {
 }
 
 #[pg_extern]
+fn delete_document(document_id: pgrx::Uuid) -> bool {
+    let rows: Option<i64> = Spi::connect_mut(|client| {
+        client
+            .update(
+                "DELETE FROM pgrg.documents WHERE id = $1",
+                None,
+                &[document_id.into()],
+            )
+            .map(|r| r.len() as i64)
+            .ok()
+    });
+    rows.unwrap_or(0) > 0
+}
+
+#[pg_extern]
+fn delete_namespace(name: &str, cascade: default!(bool, "false")) {
+    namespace_drop(name, cascade);
+}
+
+#[pg_extern]
 fn health() -> pgrx::JsonB {
     let queue_depth: Option<i64> =
         Spi::get_one("SELECT count(*) FROM pgrg.ingest_jobs WHERE status IN ('queued', 'running')")
