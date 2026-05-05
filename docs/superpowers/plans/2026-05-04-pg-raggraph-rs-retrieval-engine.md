@@ -937,7 +937,7 @@ fn parse_unknown_kind_errors() {
 
 #[test]
 fn parse_relationship_line() {
-    let line = r#"{"kind":"relationship","id":"33333333-3333-3333-3333-333333333333","namespace":"ns","src_id":"a1111111-1111-1111-1111-111111111111","dst_id":"b1111111-1111-1111-1111-111111111111","kind":"calls","weight":1.0}"#;
+    let line = r#"{"kind":"relationship","id":"33333333-3333-3333-3333-333333333333","namespace":"ns","src_id":"a1111111-1111-1111-1111-111111111111","dst_id":"b1111111-1111-1111-1111-111111111111","kind_label":"calls","weight":1.0}"#;
     let rec = parse_jsonl_line(line).expect("must parse");
     match rec {
         FixtureRecord::Relationship(r) => {
@@ -1016,6 +1016,7 @@ pub struct FixtureRelationship {
     pub namespace: String,
     pub src_id: Uuid,
     pub dst_id: Uuid,
+    #[serde(rename = "kind_label")]
     pub kind: String,
     #[serde(default = "default_weight")]
     pub weight: f64,
@@ -1105,7 +1106,7 @@ Add to the `tests` module in `pg_raggraph/src/lib.rs`:
                 r#"{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000001","namespace":"fix_ns","document_id":"a0000000-0000-0000-0000-000000000001","ord":0,"text":"alpha beta","token_count":2,"embedding":[0.1,0.2],"metadata":{"tag":"x"}}"#,"\n",
                 r#"{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000002","namespace":"fix_ns","document_id":"a0000000-0000-0000-0000-000000000001","ord":1,"text":"gamma delta","token_count":2,"embedding":[0.3,0.4]}"#,"\n",
                 r#"{"kind":"entity","id":"e0000000-0000-0000-0000-000000000001","namespace":"fix_ns","name":"AuthModule","kind_label":"module","name_emb":[0.5,0.6]}"#,"\n",
-                r#"{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000001","namespace":"fix_ns","src_id":"e0000000-0000-0000-0000-000000000001","dst_id":"e0000000-0000-0000-0000-000000000001","kind":"self_loop","weight":1.0}"#,"\n",
+                r#"{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000001","namespace":"fix_ns","src_id":"e0000000-0000-0000-0000-000000000001","dst_id":"e0000000-0000-0000-0000-000000000001","kind_label":"self_loop","weight":1.0}"#,"\n",
                 r#"{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000001","entity_id":"e0000000-0000-0000-0000-000000000001","confidence":0.9,"classification":"extracted"}"#,"\n",
             ),
         )
@@ -1972,8 +1973,8 @@ Add to the `tests` module in `pg_raggraph/src/lib.rs`:
                     r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000061","namespace":"{ns}","name":"AAA","kind_label":"node","name_emb":{ea}}}"#,"\n",
                     r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000062","namespace":"{ns}","name":"BBB","kind_label":"node","name_emb":{eb}}}"#,"\n",
                     r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000063","namespace":"{ns}","name":"CCC","kind_label":"node","name_emb":{ec}}}"#,"\n",
-                    r#"{{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000071","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000061","dst_id":"e0000000-0000-0000-0000-000000000062","kind":"next","weight":1.0}}"#,"\n",
-                    r#"{{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000072","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000062","dst_id":"e0000000-0000-0000-0000-000000000063","kind":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000071","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000061","dst_id":"e0000000-0000-0000-0000-000000000062","kind_label":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"relationship","id":"r0000000-0000-0000-0000-000000000072","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000062","dst_id":"e0000000-0000-0000-0000-000000000063","kind_label":"next","weight":1.0}}"#,"\n",
                     r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000051","entity_id":"e0000000-0000-0000-0000-000000000061","confidence":1.0,"classification":"extracted"}}"#,"\n",
                     r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000052","entity_id":"e0000000-0000-0000-0000-000000000062","confidence":1.0,"classification":"extracted"}}"#,"\n",
                     r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000053","entity_id":"e0000000-0000-0000-0000-000000000063","confidence":1.0,"classification":"extracted"}}"#,"\n",
