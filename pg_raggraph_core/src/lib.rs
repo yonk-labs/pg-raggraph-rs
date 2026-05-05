@@ -8,3 +8,16 @@ pub mod types;
 
 pub use error::{CoreError, CoreResult};
 pub use types::*;
+
+pub mod credentials {
+    /// Redacted form for display: keeps the first 3 chars, replaces the rest with `***`.
+    /// Designed to keep the provider prefix (sk-, key-, ...) visible while hiding the secret.
+    #[must_use]
+    pub fn redact(credential: &str) -> String {
+        if credential.len() <= 3 {
+            return "***".to_string();
+        }
+        let (visible, _) = credential.split_at(3);
+        format!("{visible}***")
+    }
+}

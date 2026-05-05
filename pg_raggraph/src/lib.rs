@@ -96,6 +96,50 @@ mod tests {
             Spi::get_one("SELECT count(*) FROM pgrg.namespaces WHERE name = 'drop_me'").unwrap();
         assert_eq!(n, Some(0));
     }
+
+    #[pg_test]
+    fn provider_create_then_list() {
+        Spi::run(
+            "SELECT pgrg.provider_create('p1', 'llm', 'openai', \
+                                          'https://api.openai.com', 'gpt-4o-mini', \
+                                          'sk-test-secret-1234567890', '{}')",
+        )
+        .unwrap();
+
+        let json: pgrx::JsonB = Spi::get_one("SELECT pgrg.provider_list()")
+            .unwrap()
+            .expect("provider_list returned NULL");
+        let arr = json.0.as_array().expect("provider_list returns array");
+        assert_eq!(arr.len(), 1);
+        let obj = &arr[0];
+        assert_eq!(obj["name"], "p1");
+        assert_eq!(obj["kind"], "llm");
+        assert_eq!(obj["provider"], "openai");
+        let cred = obj["credential"].as_str().unwrap();
+        assert!(
+            cred.starts_with("sk-"),
+            "credential should still show prefix"
+        );
+        assert!(cred.contains("***"), "credential should be redacted");
+        assert!(
+            !cred.contains("1234567890"),
+            "credential should not include the secret"
+        );
+    }
+
+    #[pg_test]
+    fn provider_drop_removes_row() {
+        Spi::run(
+            "SELECT pgrg.provider_create('p2', 'embedding', 'openai', \
+                                          'https://api.openai.com', 'text-embedding-3-small', \
+                                          'sk-also-secret', '{}')",
+        )
+        .unwrap();
+        Spi::run("SELECT pgrg.provider_drop('p2')").unwrap();
+        let n: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.providers WHERE name = 'p2'").unwrap();
+        assert_eq!(n, Some(0));
+    }
 }
 
 #[cfg(test)]
