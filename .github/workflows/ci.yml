@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -21,8 +21,8 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      - name: cargo check (workspace, default features)
-        run: cargo check --workspace
+      - name: cargo check (non-pgrx crates)
+        run: cargo check -p pg_raggraph_core -p pg_raggraph_sidecar
 
       - name: cargo clippy (core + sidecar — non-pgrx crates)
         run: cargo clippy -p pg_raggraph_core -p pg_raggraph_sidecar -- -D warnings
@@ -34,20 +34,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: install postgres + dev headers
+      - name: install pgrx build prereqs
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-17 postgresql-server-dev-17 \
-                                   postgresql-17-pgvector postgresql-contrib-17
+          sudo apt-get install -y libicu-dev bison flex libreadline-dev
 
       - name: install cargo-pgrx
         run: cargo install --locked cargo-pgrx --version =0.17.0
 
-      - name: pgrx init
-        run: cargo pgrx init --pg17 $(which pg_config)
+      - name: pgrx init (download + build pg17)
+        run: cargo pgrx init --pg17 download
 
       - name: pgrx test
         run: cargo pgrx test pg17 -p pg_raggraph
