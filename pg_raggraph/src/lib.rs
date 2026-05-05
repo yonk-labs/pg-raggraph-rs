@@ -799,6 +799,47 @@ mod tests {
             "weight override must change score (default={default_score:?}, override={override_score:?})"
         );
     }
+
+    #[pg_test]
+    fn signals_shape_is_lane_rk_w_tuple() {
+        // Constraint "Ask First": signals shape change requires approval.
+        // Plan 2's shape: jsonb_agg(jsonb_build_object('lane',lane,'rk',rk,'w',w)).
+        // The 'w' field is an additive change (Task 11) — downstream readers
+        // that only consume {lane, rk} continue to work.
+        load_minimal_fixture_for_query("sig_shape_ns");
+        let signals: pgrx::JsonB = Spi::get_one(
+            "SELECT signals FROM pgrg.query('alpha', NULL, 5, 'sig_shape_ns', 1, NULL, 'hybrid') LIMIT 1",
+        )
+        .unwrap()
+        .expect("must return row");
+        let arr = signals.0.as_array().expect("signals is array");
+        for s in arr {
+            assert!(s.get("lane").is_some(), "signal must have `lane` key");
+            assert!(s.get("rk").is_some(), "signal must have `rk` key");
+            assert!(
+                s.get("w").is_some(),
+                "signal must have `w` key (Plan 2 addition)"
+            );
+        }
+    }
+
+    #[pg_test]
+    fn debug_retrieval_guc_does_not_break_query() {
+        // Plan 2: GUC is a no-op (additional debug fields land in Plan 6).
+        // This test guards against future regressions: setting the GUC must
+        // not error or change the column shape.
+        load_minimal_fixture_for_query("debug_guc_ns");
+        Spi::run("SET pg_raggraph.debug_retrieval = true").unwrap();
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('alpha', NULL, 5, 'debug_guc_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert!(
+            n.unwrap_or(0) > 0,
+            "query must still work with debug_retrieval=true"
+        );
+        Spi::run("SET pg_raggraph.debug_retrieval = false").unwrap();
+    }
 }
 
 #[cfg(test)]

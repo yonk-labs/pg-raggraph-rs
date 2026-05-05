@@ -17,6 +17,14 @@
 //! Schema reference: `pg_raggraph/sql/001_tables.sql` — `chunks.id`, `chunks.document_id`,
 //! `documents.id` are all `uuid`. T6's SQL selects `c.id, c.document_id, c.text, f.score,
 //! f.sigs` directly from `pgrg.chunks`, so the columns are uuid-typed natively.
+//!
+//! ## Plan 2 GUC contract for `pg_raggraph.debug_retrieval`
+//!
+//! Plan 1 registered this GUC. Plan 2 leaves it as a no-op: the `signals`
+//! JSONB always carries `[{lane, rk, w}]` per fused row, which is
+//! sufficient for SC-001 and SC-005 verification. Plan 6 (parity harness)
+//! may add lane-by-lane raw scores and timing under this GUC — flagged as
+//! a future expansion, not a Plan 2 concern.
 
 use pg_raggraph_core::retrieval::Mode;
 use pg_raggraph_core::retrieval::query_sql::build_query_sql;
