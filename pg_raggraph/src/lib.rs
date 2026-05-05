@@ -840,6 +840,37 @@ mod tests {
         );
         Spi::run("SET pg_raggraph.debug_retrieval = false").unwrap();
     }
+
+    #[pg_test]
+    fn parity_mode_end_to_end_query_works() {
+        // SC-009 + DC-004: with parity_mode=true at namespace_create,
+        // the IVFFlat index path serves queries.
+        Spi::run("SET pg_raggraph.parity_mode = true").unwrap();
+        load_minimal_fixture_for_query("parity_e2e_ns");
+
+        // Verify the index is IVFFlat.
+        let def: Option<String> = Spi::get_one(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'pgrg' AND indexname = 'chunks_embedding_hnsw'",
+        )
+        .unwrap();
+        assert!(
+            def.unwrap_or_default().contains("USING ivfflat"),
+            "parity_mode must produce IVFFlat index"
+        );
+
+        // Verify queries still work.
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('alpha', NULL, 5, 'parity_e2e_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert!(
+            n.unwrap_or(0) > 0,
+            "queries must work under parity_mode (IVFFlat)"
+        );
+
+        Spi::run("SET pg_raggraph.parity_mode = false").unwrap();
+    }
 }
 
 #[cfg(test)]
