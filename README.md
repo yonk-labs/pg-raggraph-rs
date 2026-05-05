@@ -12,7 +12,15 @@ This is the Rust extension implementation of [pg-raggraph](https://github.com/yo
 
 ## Status
 
-**Pre-alpha.** Foundation in place: schema, namespaces, providers, GUCs, health/status. Ingest, retrieval, and `ask` land in subsequent plans (see `docs/superpowers/plans/`).
+**Pre-alpha (0.1.0-alpha.2).** Foundation + **retrieval engine** in place: schema, namespaces, providers, GUCs, health/status, **plus** synchronous hybrid retrieval (`pgrg.query`), deterministic test embeddings (`pgrg.embed`), and a fixture loader for testing and parity benchmarks (`pgrg.ingest_extracted`). Async ingest (Plan 3), LLM grounding (Plan 4), sidecar (Plan 5), and the parity harness (Plan 6) land in subsequent plans.
+
+```sql
+-- This works as of 0.1.0-alpha.2:
+CREATE EXTENSION pg_raggraph CASCADE;
+SELECT pgrg.namespace_create('demo');
+SELECT pgrg.ingest_extracted('/path/to/test-corpus.jsonl', 'demo');
+SELECT text, score FROM pgrg.query('your query here', NULL, 5, 'demo');
+```
 
 ## Requirements
 
