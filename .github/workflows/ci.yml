@@ -48,5 +48,13 @@ jobs:
       - name: pgrx init (download + build pg17)
         run: cargo pgrx init --pg17 download
 
+      - name: build + install pgvector against pgrx PG17
+        run: |
+          PGRX_PG_CONFIG=$(cargo pgrx info pg-config pg17)
+          git clone --branch v0.8.1 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          cd /tmp/pgvector
+          PG_CONFIG="$PGRX_PG_CONFIG" make
+          PG_CONFIG="$PGRX_PG_CONFIG" make install
+
       - name: pgrx test
         run: cargo pgrx test pg17 -p pg_raggraph
