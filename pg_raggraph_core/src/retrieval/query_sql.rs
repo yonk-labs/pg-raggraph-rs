@@ -15,6 +15,12 @@
 //!
 //! RRF k=60 is hard-coded per spec §4 line 164 and Constraint Always
 //! ("single SQL statement matching spec §4 byte-for-byte semantically").
+//!
+//! SC-006 (hops=0 excludes graph lane): the recursive walker's base case
+//! emits seeds at d=0 regardless of `$5`, so without an extra runtime gate
+//! a `hops=0` query in `graph` mode would still surface seed-attached
+//! chunks via `chunk_entities`. The `graph` CTE adds `AND $5 >= 1` to its
+//! WHERE so the lane returns zero rows when `hops=0`.
 
 use crate::retrieval::Mode;
 
@@ -76,6 +82,7 @@ WITH RECURSIVE
     JOIN pgrg.chunks c ON c.id = m.chunk_id
     WHERE {graph_gate}c.namespace = $4
       AND ($2::jsonb IS NULL OR c.metadata @> $2)
+      AND $5 >= 1
     GROUP BY m.chunk_id LIMIT 50
   ),
   fused AS (

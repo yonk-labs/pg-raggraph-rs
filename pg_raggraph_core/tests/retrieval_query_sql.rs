@@ -109,6 +109,24 @@ fn sql_score_is_cast_to_float8() {
 }
 
 #[test]
+fn sql_graph_lane_gated_when_hops_zero() {
+    // SC-006: hops=0 must exclude the graph lane entirely. The recursive
+    // walker's base case emits seeds at d=0 regardless of $5, so without an
+    // extra runtime gate the `graph` CTE would still surface seed-attached
+    // chunks via `chunk_entities` joins. A `$5 >= 1` predicate inside the
+    // graph CTE forces zero rows when hops=0.
+    //
+    // Pin the contract at the SQL-string level so any future refactor of the
+    // walker has to keep the lane hops-aware (the integration test
+    // `hops_zero_excludes_graph_lane` is the end-to-end gate).
+    let sql = build_query_sql(Mode::Graph);
+    assert!(
+        sql.contains("$5 >= 1"),
+        "graph lane must gate on hops >= 1 to satisfy SC-006; got SQL: {sql}"
+    );
+}
+
+#[test]
 fn sql_recursive_cte_has_single_recursive_term() {
     // PG requires a recursive CTE be expressible as `non-recursive UNION ALL recursive`.
     // T6 originally emitted three branches (one base + two recursive), which PG rejects
