@@ -169,6 +169,26 @@ mod tests {
     }
 
     #[pg_test]
+    fn status_summary_has_zero_jobs() {
+        let json: pgrx::JsonB = Spi::get_one("SELECT pgrg.status()")
+            .unwrap()
+            .expect("status() returned NULL");
+        let obj = json.0.as_object().unwrap();
+        assert_eq!(obj["queued"], 0);
+        assert_eq!(obj["running"], 0);
+        assert_eq!(obj["completed"], 0);
+        assert_eq!(obj["failed"], 0);
+    }
+
+    #[pg_test]
+    fn status_unknown_job_returns_null() {
+        let json: Option<pgrx::JsonB> =
+            Spi::get_one("SELECT pgrg.status('00000000-0000-0000-0000-000000000000'::uuid)")
+                .unwrap();
+        assert!(json.is_none(), "unknown job_id should return NULL");
+    }
+
+    #[pg_test]
     fn gucs_have_expected_defaults() {
         let workers: Option<i32> =
             Spi::get_one("SELECT current_setting('pg_raggraph.bgw_workers')::int").unwrap();

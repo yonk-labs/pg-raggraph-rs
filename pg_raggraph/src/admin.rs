@@ -166,6 +166,62 @@ fn provider_list() -> pgrx::JsonB {
 }
 
 #[pg_extern]
+fn status(job_id: default!(Option<pgrx::Uuid>, "NULL")) -> Option<pgrx::JsonB> {
+    match job_id {
+        None => {
+            let counts: Vec<(String, i64)> = Spi::connect(|client| {
+                client
+                    .select(
+                        "SELECT status, count(*)::bigint FROM pgrg.ingest_jobs GROUP BY status",
+                        None,
+                        &[],
+                    )
+                    .expect("status() summary select failed")
+                    .map(|r| {
+                        (
+                            r.get::<String>(1).ok().flatten().unwrap_or_default(),
+                            r.get::<i64>(2).ok().flatten().unwrap_or(0),
+                        )
+                    })
+                    .collect()
+            });
+
+            let mut summary = serde_json::json!({
+                "queued":    0,
+                "running":   0,
+                "completed": 0,
+                "failed":    0,
+            });
+            for (k, v) in counts {
+                summary[k] = serde_json::Value::from(v);
+            }
+            Some(pgrx::JsonB(summary))
+        }
+        Some(uuid) => {
+            // pgrx 0.17: Spi::get_three_with_args returns
+            // Result<(Option<A>, Option<B>, Option<C>)> — NOT Result<Option<(...)>>.
+            // When no row matches, the inner first()/get() returns Err(InvalidPosition);
+            // .ok() on that yields None so we can distinguish "no row" from "row found".
+            let row: Option<(Option<String>, Option<String>, Option<String>)> =
+                Spi::get_three_with_args(
+                    "SELECT status, source, error FROM pgrg.ingest_jobs WHERE id = $1",
+                    &[uuid.into()],
+                )
+                .ok();
+
+            row.map(|(status, source, error)| {
+                pgrx::JsonB(serde_json::json!({
+                    "id":     uuid.to_string(),
+                    "status": status,
+                    "source": source,
+                    "error":  error,
+                }))
+            })
+        }
+    }
+}
+
+#[pg_extern]
 fn health() -> pgrx::JsonB {
     let queue_depth: Option<i64> =
         Spi::get_one("SELECT count(*) FROM pgrg.ingest_jobs WHERE status IN ('queued', 'running')")
