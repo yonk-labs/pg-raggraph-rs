@@ -37,6 +37,11 @@ pub extern "C-unwind" fn _PG_init() {
     name = "migrations_table",
     requires = ["create_tables"]
 );
+::pgrx::extension_sql_file!(
+    "../sql/migrations/004_retrieval_indexes.sql",
+    name = "retrieval_indexes",
+    requires = ["create_indexes"]
+);
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
@@ -231,6 +236,53 @@ mod tests {
             Spi::run("SELECT pgrg.namespace_drop('blocked_ns', false)").unwrap();
         });
         assert!(res.is_err(), "namespace_drop without cascade must error");
+    }
+
+    #[pg_test]
+    fn parity_mode_creates_ivfflat_indexes() {
+        // SC-009: parity_mode at namespace_create swaps HNSW -> IVFFlat
+        Spi::run("SET pg_raggraph.parity_mode = true").unwrap();
+        Spi::run("SELECT pgrg.namespace_create('parity_ns')").unwrap();
+
+        let chunk_idx_def: Option<String> = Spi::get_one(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'pgrg' AND indexname = 'chunks_embedding_hnsw'",
+        )
+        .unwrap();
+
+        let def = chunk_idx_def.expect("chunks_embedding_hnsw must exist");
+        assert!(
+            def.contains("USING ivfflat"),
+            "expected IVFFlat under parity_mode, got: {def}"
+        );
+
+        let entity_idx_def: Option<String> = Spi::get_one(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'pgrg' AND indexname = 'entities_name_emb_hnsw'",
+        )
+        .unwrap();
+        let edef = entity_idx_def.expect("entities_name_emb_hnsw must exist");
+        assert!(
+            edef.contains("USING ivfflat"),
+            "expected IVFFlat under parity_mode, got: {edef}"
+        );
+
+        Spi::run("SET pg_raggraph.parity_mode = false").unwrap();
+    }
+
+    #[pg_test]
+    fn default_mode_keeps_hnsw_indexes() {
+        // Counterpart: default install must remain HNSW.
+        let chunk_idx_def: Option<String> = Spi::get_one(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'pgrg' AND indexname = 'chunks_embedding_hnsw'",
+        )
+        .unwrap();
+        let def = chunk_idx_def.expect("chunks_embedding_hnsw must exist");
+        assert!(
+            def.contains("USING hnsw"),
+            "default install must use HNSW, got: {def}"
+        );
     }
 
     #[pg_test]

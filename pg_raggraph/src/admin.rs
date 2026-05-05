@@ -28,6 +28,9 @@ fn namespace_create(
             )
             .expect("namespace_create insert failed");
     });
+
+    Spi::run("SELECT pgrg._maybe_apply_parity_indexes()")
+        .expect("namespace_create: parity index application failed");
 }
 
 #[pg_extern]
