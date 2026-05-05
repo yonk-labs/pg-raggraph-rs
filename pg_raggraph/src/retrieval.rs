@@ -31,7 +31,7 @@ fn query(
     top_k: default!(i32, "10"),
     namespace: default!(&str, "'default'"),
     hops: default!(i32, "1"),
-    _weights: default!(Option<pgrx::JsonB>, "NULL"),
+    weights: default!(Option<pgrx::JsonB>, "NULL"),
     mode: default!(&str, "'hybrid'"),
 ) -> TableIterator<
     'static,
@@ -43,6 +43,8 @@ fn query(
         name!(signals, pgrx::JsonB),
     ),
 > {
+    // Accepted but not applied here; Task 11 wires the weight override into RRF fusion.
+    let _ = weights;
     let parsed_mode = match Mode::parse(mode) {
         Some(m) => m,
         None => {
