@@ -7,6 +7,15 @@ use pgrx::prelude::*;
 ::pgrx::pg_module_magic!(name, version);
 
 mod admin;
+mod gucs;
+
+/// Called by PostgreSQL when the extension shared library is loaded.
+/// Registers GUCs so they are available before CREATE EXTENSION runs.
+#[allow(non_snake_case)]
+#[pg_guard]
+pub extern "C-unwind" fn _PG_init() {
+    gucs::register();
+}
 
 ::pgrx::extension_sql_file!(
     "../sql/000_schema.sql",
@@ -139,6 +148,21 @@ mod tests {
         let n: Option<i64> =
             Spi::get_one("SELECT count(*) FROM pgrg.providers WHERE name = 'p2'").unwrap();
         assert_eq!(n, Some(0));
+    }
+
+    #[pg_test]
+    fn gucs_have_expected_defaults() {
+        let workers: Option<i32> =
+            Spi::get_one("SELECT current_setting('pg_raggraph.bgw_workers')::int").unwrap();
+        assert_eq!(workers, Some(2));
+
+        let dim: Option<i32> =
+            Spi::get_one("SELECT current_setting('pg_raggraph.embed_dim')::int").unwrap();
+        assert_eq!(dim, Some(384));
+
+        let extract_conc: Option<i32> =
+            Spi::get_one("SELECT current_setting('pg_raggraph.extract_concurrency')::int").unwrap();
+        assert_eq!(extract_conc, Some(4));
     }
 }
 
