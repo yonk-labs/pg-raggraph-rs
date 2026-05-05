@@ -7,6 +7,7 @@ use pgrx::prelude::*;
 ::pgrx::pg_module_magic!(name, version);
 
 mod admin;
+mod embedding;
 mod gucs;
 
 /// Called by PostgreSQL when the extension shared library is loaded.
@@ -283,6 +284,36 @@ mod tests {
             def.contains("USING hnsw"),
             "default install must use HNSW, got: {def}"
         );
+    }
+
+    #[pg_test]
+    fn embed_returns_correct_dim_vector() {
+        // SC-002: pgrg.embed returns a vector(N) where N = pg_raggraph.embed_dim.
+        // pgvector returns vectors as text in the form '[v1,v2,...]'; the dim
+        // is verifiable by parsing the comma count. Use vector_dims() from
+        // pgvector to assert without parsing strings.
+        let dim: Option<i32> =
+            Spi::get_one("SELECT vector_dims(pgrg.embed('hello world'))").unwrap();
+        assert_eq!(dim, Some(384));
+    }
+
+    #[pg_test]
+    fn embed_is_deterministic() {
+        // SC-002: two consecutive calls on the same input return byte-identical vectors.
+        let same: Option<bool> = Spi::get_one(
+            "SELECT pgrg.embed('hello world')::text = pgrg.embed('hello world')::text",
+        )
+        .unwrap();
+        assert_eq!(same, Some(true));
+    }
+
+    #[pg_test]
+    fn embed_works_without_providers_table_rows() {
+        // SC-011: fresh DB with no providers rows — pgrg.embed must succeed.
+        let n: Option<i64> = Spi::get_one("SELECT count(*) FROM pgrg.providers").unwrap();
+        assert_eq!(n, Some(0), "test precondition: no providers rows");
+        // If this errors, SC-011 fails.
+        let _: Option<i32> = Spi::get_one("SELECT vector_dims(pgrg.embed('q'))").unwrap();
     }
 
     #[pg_test]

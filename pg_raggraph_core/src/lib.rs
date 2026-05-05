@@ -3,6 +3,7 @@
 //! Has no pgrx dependency; testable with plain `cargo test`. Used by both the
 //! extension crate (linked into the .so) and the sidecar binary.
 
+pub mod embedding;
 pub mod error;
 pub mod retrieval;
 pub mod types;

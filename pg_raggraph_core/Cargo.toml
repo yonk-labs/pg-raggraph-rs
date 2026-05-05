@@ -11,6 +11,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"
