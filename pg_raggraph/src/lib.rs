@@ -521,6 +521,158 @@ mod tests {
         assert!(res.is_err(), "mode='smart' must error per Constraint Never");
     }
 
+    fn load_chain_fixture(ns: &str) {
+        // 3-node chain A -> B -> C, each entity attached to one chunk.
+        // Seed query embedding will match entity A so hops control reachability.
+        Spi::run(&format!("SELECT pgrg.namespace_create('{ns}')")).unwrap();
+        let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
+            .unwrap()
+            .unwrap();
+        let dim_usize: usize = usize::try_from(dim).expect("dim fits in usize");
+        let mk_emb = |seed: f32| {
+            let mut s = String::from("[");
+            for i in 0..dim {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("{}", seed + (i as f32) * 0.0001));
+            }
+            s.push(']');
+            s
+        };
+        // Entity name_emb must be byte-identical to pgrg.embed('XXX') so the
+        // graph seed CTE (cosine distance < 0.35) accepts it. Use the same
+        // deterministic embedder the SQL surface uses (Plan 2 T4).
+        let lit_for = |name: &str| -> String {
+            let v = pg_raggraph_core::embedding::deterministic_embed(name, dim_usize);
+            let mut s = String::from("[");
+            for (i, x) in v.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("{x}"));
+            }
+            s.push(']');
+            s
+        };
+        let aaa_lit = lit_for("AAA");
+        let bbb_lit = lit_for("BBB");
+        let ccc_lit = lit_for("CCC");
+        let path = format!("/tmp/pgrg_chain_{ns}.jsonl");
+        // Three chunks (one per entity), three entities A/B/C, two relationships A->B, B->C.
+        std::fs::write(
+            &path,
+            format!(
+                concat!(
+                    r#"{{"kind":"document","id":"a0000000-0000-0000-0000-000000000050","namespace":"{ns}","source":"d.md","content_hash":"h-chain-{ns}"}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000051","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":0,"text":"chunk-a","token_count":1,"embedding":{ea}}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000052","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":1,"text":"chunk-b","token_count":1,"embedding":{eb}}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000053","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":2,"text":"chunk-c","token_count":1,"embedding":{ec}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000061","namespace":"{ns}","name":"AAA","kind_label":"node","name_emb":{ea_ent}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000062","namespace":"{ns}","name":"BBB","kind_label":"node","name_emb":{eb_ent}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000063","namespace":"{ns}","name":"CCC","kind_label":"node","name_emb":{ec_ent}}}"#,"\n",
+                    // Note: plan literal `r0000000-...` is not a valid hex UUID; using `f0000000-...` instead.
+                    r#"{{"kind":"relationship","id":"f0000000-0000-0000-0000-000000000071","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000061","dst_id":"e0000000-0000-0000-0000-000000000062","kind_label":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"relationship","id":"f0000000-0000-0000-0000-000000000072","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000062","dst_id":"e0000000-0000-0000-0000-000000000063","kind_label":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000051","entity_id":"e0000000-0000-0000-0000-000000000061","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000052","entity_id":"e0000000-0000-0000-0000-000000000062","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000053","entity_id":"e0000000-0000-0000-0000-000000000063","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                ),
+                ns = ns,
+                ea = mk_emb(0.10),
+                eb = mk_emb(0.20),
+                ec = mk_emb(0.30),
+                ea_ent = aaa_lit,
+                eb_ent = bbb_lit,
+                ec_ent = ccc_lit,
+            ),
+        )
+        .expect("chain fixture write");
+        Spi::run(&format!("SELECT pgrg.ingest_extracted('{path}', '{ns}')")).unwrap();
+    }
+
+    #[pg_test]
+    fn hops_zero_excludes_graph_lane() {
+        // SC-006: hops=0 excludes graph lane entirely.
+        load_chain_fixture("hops0_ns");
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('AAA', NULL, 10, 'hops0_ns', 0, NULL, 'graph')",
+        )
+        .unwrap();
+        assert_eq!(n, Some(0), "hops=0 in graph mode must yield zero rows");
+    }
+
+    #[pg_test]
+    fn hops_one_includes_direct_neighbors_only() {
+        // SC-006: hops=1 -> direct neighbors. Seed = AAA, reachable = {A, B}; chunk-c excluded.
+        load_chain_fixture("hops1_ns");
+        let texts: Vec<String> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT text FROM pgrg.query('AAA', NULL, 10, 'hops1_ns', 1, NULL, 'graph')",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        });
+        assert!(
+            texts.contains(&"chunk-a".to_string()),
+            "must include chunk-a (seed)"
+        );
+        assert!(
+            texts.contains(&"chunk-b".to_string()),
+            "must include chunk-b (1-hop neighbor)"
+        );
+        assert!(
+            !texts.contains(&"chunk-c".to_string()),
+            "chunk-c is 2 hops away; should be excluded"
+        );
+    }
+
+    #[pg_test]
+    fn hops_two_includes_friends_of_friends() {
+        // SC-006: hops=2 -> includes chunk-c.
+        load_chain_fixture("hops2_ns");
+        let texts: Vec<String> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT text FROM pgrg.query('AAA', NULL, 10, 'hops2_ns', 2, NULL, 'graph')",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        });
+        assert!(
+            texts.contains(&"chunk-c".to_string()),
+            "hops=2 must include 2-hop chunk-c"
+        );
+    }
+
+    #[pg_test]
+    fn undirected_walk_reaches_a_from_b_seed() {
+        // SC-007: undirected. A -> B exists; seed at B, walk to A.
+        load_chain_fixture("undir_ns");
+        let texts: Vec<String> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT text FROM pgrg.query('BBB', NULL, 10, 'undir_ns', 1, NULL, 'graph')",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        });
+        assert!(
+            texts.contains(&"chunk-a".to_string()),
+            "undirected walk: A must be reachable from B (relationship A->B); got {texts:?}"
+        );
+    }
+
     #[pg_test]
     fn gucs_have_expected_defaults() {
         let workers: Option<i32> =
