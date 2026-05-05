@@ -197,6 +197,29 @@ mod tests {
     }
 
     #[pg_test]
+    fn status_propagates_non_invalid_position_errors() {
+        // SC-014: status() must NOT swallow SPI errors silently.
+        // No-row path: random UUID -> NULL.
+        let null_result: Option<pgrx::JsonB> =
+            Spi::get_one("SELECT pgrg.status('00000000-0000-0000-0000-000000000000'::uuid)")
+                .unwrap();
+        assert!(null_result.is_none(), "unknown job_id must return NULL");
+
+        // Existing-row path: insert a job row, query its id.
+        Spi::run("SELECT pgrg.namespace_create('status_test_ns')").unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.ingest_jobs (id, status, source, namespace) \
+             VALUES ('44444444-4444-4444-4444-444444444444', 'queued', 'test.md', 'status_test_ns')",
+        )
+        .unwrap();
+        let found: Option<pgrx::JsonB> =
+            Spi::get_one("SELECT pgrg.status('44444444-4444-4444-4444-444444444444'::uuid)")
+                .unwrap();
+        let obj = found.expect("must find row").0;
+        assert_eq!(obj["status"], "queued");
+    }
+
+    #[pg_test]
     fn delete_document_removes_chunks_via_cascade() {
         Spi::run("SELECT pgrg.namespace_create('del_doc_ns')").unwrap();
         Spi::run(

@@ -202,24 +202,39 @@ fn status(job_id: default!(Option<pgrx::Uuid>, "NULL")) -> Option<pgrx::JsonB> {
         }
         Some(uuid) => {
             // pgrx 0.17: Spi::get_three_with_args returns
-            // Result<(Option<A>, Option<B>, Option<C>)> — NOT Result<Option<(...)>>.
-            // When no row matches, the inner first()/get() returns Err(InvalidPosition);
-            // .ok() on that yields None so we can distinguish "no row" from "row found".
-            let row: Option<(Option<String>, Option<String>, Option<String>)> =
-                Spi::get_three_with_args(
-                    "SELECT status, source, error FROM pgrg.ingest_jobs WHERE id = $1",
-                    &[uuid.into()],
-                )
-                .ok();
+            // Result<(Option<A>, Option<B>, Option<C>), SpiError>.
+            // When no row matches, the inner first()/get() returns
+            // Err(SpiError::InvalidPosition) — that's the ONLY variant we
+            // swallow as "no row". Any other SpiError must propagate (SC-014).
+            #[allow(clippy::type_complexity)]
+            let result: Result<
+                (Option<String>, Option<String>, Option<String>),
+                pgrx::spi::SpiError,
+            > = Spi::get_three_with_args(
+                "SELECT status, source, error FROM pgrg.ingest_jobs WHERE id = $1",
+                &[uuid.into()],
+            );
 
-            row.map(|(status, source, error)| {
-                pgrx::JsonB(serde_json::json!({
+            match result {
+                Ok((status, source, error)) => Some(pgrx::JsonB(serde_json::json!({
                     "id":     uuid.to_string(),
                     "status": status,
                     "source": source,
                     "error":  error,
-                }))
-            })
+                }))),
+                Err(pgrx::spi::SpiError::InvalidPosition) => None,
+                Err(other) => {
+                    // ereport!(ERROR) is no-return; pgrx 0.17 expands the
+                    // macro to `report(...); unreachable!();`, so a trailing
+                    // unreachable!() here would trip unreachable_code
+                    // (matches T5/T7 pattern in ingest_extracted.rs / retrieval.rs).
+                    ereport!(
+                        ERROR,
+                        PgSqlErrorCode::ERRCODE_INTERNAL_ERROR,
+                        format!("pgrg.status: SPI error: {other}")
+                    );
+                }
+            }
         }
     }
 }
