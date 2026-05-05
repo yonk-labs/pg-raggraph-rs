@@ -373,6 +373,7 @@ mod tests {
         let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
             .unwrap()
             .unwrap();
+        let dim_usize: usize = usize::try_from(dim).expect("dim fits in usize");
         let mk_emb = |seed: f32| {
             let mut s = String::from("[");
             for i in 0..dim {
@@ -384,6 +385,18 @@ mod tests {
             s.push(']');
             s
         };
+        // Entity name_emb must be byte-identical to pgrg.embed('alpha') so the
+        // graph seed CTE (cosine distance < 0.35) accepts it. Use the same
+        // deterministic embedder the SQL surface uses (Plan 2 T4).
+        let alpha_vec = pg_raggraph_core::embedding::deterministic_embed("alpha", dim_usize);
+        let mut alpha_lit = String::from("[");
+        for (i, x) in alpha_vec.iter().enumerate() {
+            if i > 0 {
+                alpha_lit.push(',');
+            }
+            alpha_lit.push_str(&format!("{x}"));
+        }
+        alpha_lit.push(']');
         let path = format!("/tmp/pgrg_q_{ns}.jsonl");
         std::fs::write(
             &path,
@@ -398,7 +411,7 @@ mod tests {
                 ns = ns,
                 e1 = mk_emb(0.1),
                 e2 = mk_emb(0.5),
-                e3 = mk_emb(0.1),
+                e3 = alpha_lit,
             ),
         )
         .expect("fixture write");
@@ -442,6 +455,70 @@ mod tests {
                 "results must be descending by score, got {scores:?}"
             );
         }
+    }
+
+    #[pg_test]
+    fn query_vector_mode_only_vec_lane_in_signals() {
+        load_minimal_fixture_for_query("q_vec_only_ns");
+        let signals: pgrx::JsonB = Spi::get_one(
+            "SELECT signals FROM pgrg.query('alpha', NULL, 5, 'q_vec_only_ns', 1, NULL, 'vector') LIMIT 1",
+        )
+        .unwrap()
+        .expect("vector mode returned no rows");
+        let arr = signals.0.as_array().expect("signals is array");
+        for sig in arr {
+            assert_eq!(
+                sig["lane"], "vec",
+                "vector mode: signals must contain only lane='vec', got {sig}"
+            );
+        }
+    }
+
+    #[pg_test]
+    fn query_bm25_mode_only_bm25_lane_in_signals() {
+        load_minimal_fixture_for_query("q_bm25_only_ns");
+        let signals: pgrx::JsonB = Spi::get_one(
+            "SELECT signals FROM pgrg.query('alpha', NULL, 5, 'q_bm25_only_ns', 1, NULL, 'bm25') LIMIT 1",
+        )
+        .unwrap()
+        .expect("bm25 mode returned no rows");
+        let arr = signals.0.as_array().expect("signals is array");
+        for sig in arr {
+            assert_eq!(
+                sig["lane"], "bm25",
+                "bm25 mode: signals must contain only lane='bm25', got {sig}"
+            );
+        }
+    }
+
+    #[pg_test]
+    fn query_graph_mode_only_graph_lane_in_signals() {
+        load_minimal_fixture_for_query("q_graph_only_ns");
+        let signals: pgrx::JsonB = Spi::get_one(
+            "SELECT signals FROM pgrg.query('alpha', NULL, 5, 'q_graph_only_ns', 1, NULL, 'graph') LIMIT 1",
+        )
+        .unwrap()
+        .expect("graph mode returned no rows");
+        let arr = signals.0.as_array().expect("signals is array");
+        for sig in arr {
+            assert_eq!(
+                sig["lane"], "graph",
+                "graph mode: signals must contain only lane='graph', got {sig}"
+            );
+        }
+    }
+
+    #[pg_test]
+    fn query_unknown_mode_errors() {
+        // Constraint Never: no smart/local/global modes — these must error, not silently fall back.
+        load_minimal_fixture_for_query("q_unknown_ns");
+        let res = std::panic::catch_unwind(|| {
+            let _: Option<i64> = Spi::get_one(
+                "SELECT count(*) FROM pgrg.query('q', NULL, 5, 'q_unknown_ns', 1, NULL, 'smart')",
+            )
+            .unwrap();
+        });
+        assert!(res.is_err(), "mode='smart' must error per Constraint Never");
     }
 
     #[pg_test]
