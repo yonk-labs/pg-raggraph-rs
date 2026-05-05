@@ -5,5 +5,6 @@
 //! strictly pgrx FFI lives here.
 
 pub mod mode;
+pub mod rrf;
 
 pub use mode::Mode;
