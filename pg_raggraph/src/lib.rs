@@ -687,6 +687,66 @@ mod tests {
             Spi::get_one("SELECT current_setting('pg_raggraph.extract_concurrency')::int").unwrap();
         assert_eq!(extract_conc, Some(4));
     }
+
+    #[pg_test]
+    fn filter_metadata_predicate_applied_inside_lanes() {
+        // SC-008: filter='{"tag":"x"}' — only chunks whose metadata @> '{"tag":"x"}' returned.
+        Spi::run("SELECT pgrg.namespace_create('filter_ns')").unwrap();
+        let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
+            .unwrap()
+            .unwrap();
+        let mk_emb = |seed: f32| {
+            let mut s = String::from("[");
+            for i in 0..dim {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("{}", seed + (i as f32) * 0.0001));
+            }
+            s.push(']');
+            s
+        };
+        // Two chunks: one with tag=x, one without. Same text.
+        std::fs::write(
+            "/tmp/pgrg_filter.jsonl",
+            format!(
+                concat!(
+                    r#"{{"kind":"document","id":"a0000000-0000-0000-0000-000000000080","namespace":"filter_ns","source":"d.md","content_hash":"h-filter"}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000081","namespace":"filter_ns","document_id":"a0000000-0000-0000-0000-000000000080","ord":0,"text":"alpha","token_count":1,"embedding":{e},"metadata":{{"tag":"x"}}}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000082","namespace":"filter_ns","document_id":"a0000000-0000-0000-0000-000000000080","ord":1,"text":"alpha","token_count":1,"embedding":{e},"metadata":{{"tag":"y"}}}}"#,"\n",
+                ),
+                e = mk_emb(0.5),
+            ),
+        )
+        .unwrap();
+        Spi::run("SELECT pgrg.ingest_extracted('/tmp/pgrg_filter.jsonl', 'filter_ns')").unwrap();
+
+        // Without filter: both chunks reachable.
+        let unfiltered: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('alpha', NULL, 10, 'filter_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert_eq!(unfiltered, Some(2), "without filter, both chunks return");
+
+        // With filter: only the tagged chunk.
+        let filtered: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('alpha', '{\"tag\":\"x\"}'::jsonb, 10, 'filter_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert_eq!(filtered, Some(1), "filter must restrict to tag=x chunk");
+
+        // Verify it's the right chunk.
+        let id: Option<pgrx::Uuid> = Spi::get_one(
+            "SELECT chunk_id FROM pgrg.query('alpha', '{\"tag\":\"x\"}'::jsonb, 10, 'filter_ns', 1, NULL, 'hybrid') LIMIT 1",
+        )
+        .unwrap();
+        let expected = pgrx::Uuid::from_bytes(
+            *uuid::Uuid::parse_str("c0000000-0000-0000-0000-000000000081")
+                .unwrap()
+                .as_bytes(),
+        );
+        assert_eq!(id, Some(expected));
+    }
 }
 
 #[cfg(test)]
