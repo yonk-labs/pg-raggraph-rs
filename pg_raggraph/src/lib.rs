@@ -151,6 +151,24 @@ mod tests {
     }
 
     #[pg_test]
+    fn health_returns_expected_keys() {
+        let json: pgrx::JsonB = Spi::get_one("SELECT pgrg.health()")
+            .unwrap()
+            .expect("health() returned NULL");
+        let obj = json.0.as_object().expect("health() returns object");
+        for k in ["version", "schema_version", "queue_depth", "bgw_workers"] {
+            assert!(obj.contains_key(k), "health() missing key `{k}`");
+        }
+        assert_eq!(obj["bgw_workers"], 2);
+        assert_eq!(obj["queue_depth"], 0);
+        let v = obj["version"].as_str().unwrap();
+        assert!(
+            v.starts_with("0.1.0"),
+            "version should start with 0.1.0, got {v}"
+        );
+    }
+
+    #[pg_test]
     fn gucs_have_expected_defaults() {
         let workers: Option<i32> =
             Spi::get_one("SELECT current_setting('pg_raggraph.bgw_workers')::int").unwrap();

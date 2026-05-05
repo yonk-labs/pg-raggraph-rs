@@ -164,3 +164,25 @@ fn provider_list() -> pgrx::JsonB {
     });
     pgrx::JsonB(serde_json::Value::Array(rows))
 }
+
+#[pg_extern]
+fn health() -> pgrx::JsonB {
+    let queue_depth: Option<i64> =
+        Spi::get_one("SELECT count(*) FROM pgrg.ingest_jobs WHERE status IN ('queued', 'running')")
+            .unwrap_or(Some(0));
+
+    let schema_version: Option<i32> =
+        Spi::get_one("SELECT max(version) FROM pgrg.migrations").unwrap_or(Some(0));
+
+    let bgw_workers = crate::gucs::BGW_WORKERS.get();
+
+    let body = serde_json::json!({
+        "version":        env!("CARGO_PKG_VERSION"),
+        "schema_version": schema_version.unwrap_or(0),
+        "queue_depth":    queue_depth.unwrap_or(0),
+        "bgw_workers":    bgw_workers,
+        "model_loaded":   serde_json::Value::Null, // populated in Plan 3
+        "last_error":     serde_json::Value::Null, // populated in Plan 3
+    });
+    pgrx::JsonB(body)
+}
