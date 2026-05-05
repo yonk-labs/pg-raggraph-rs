@@ -83,6 +83,15 @@ fn sql_uses_parameterized_args_not_concat() {
 }
 
 #[test]
+fn sql_includes_weight_binds() {
+    // SC-010: per-lane RRF weights flow through positional binds $6/$7/$8.
+    let sql = build_query_sql(Mode::Hybrid);
+    for p in ["$6", "$7", "$8"] {
+        assert!(sql.contains(p), "missing weight positional param {p}");
+    }
+}
+
+#[test]
 fn sql_uses_with_recursive_for_graph_walk() {
     // The graph CTE self-references via the `walked` recursive walker.
     // Without WITH RECURSIVE, PG errors at execution time with

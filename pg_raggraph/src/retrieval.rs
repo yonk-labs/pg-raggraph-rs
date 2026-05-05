@@ -9,6 +9,9 @@
 //!   $3 = top_k int
 //!   $4 = namespace text
 //!   $5 = hops int
+//!   $6 = vec_weight float8
+//!   $7 = bm25_weight float8
+//!   $8 = graph_weight float8
 //!
 //! Result columns: (chunk_id uuid, document_id uuid, text text, score float, signals jsonb).
 //! Schema reference: `pg_raggraph/sql/001_tables.sql` — `chunks.id`, `chunks.document_id`,
@@ -23,7 +26,8 @@ use pgrx::prelude::*;
 ///
 /// Returns one row per fused chunk: (chunk_id, document_id, text, score, signals).
 ///
-/// `weights` is parsed and accepted but not yet applied; Task 11 wires it.
+/// `weights` is a JSONB object with optional keys `vec` / `bm25` / `graph`
+/// (float8); missing keys default to 1.0. NULL means "use defaults".
 #[pg_extern]
 fn query(
     q: &str,
@@ -43,8 +47,28 @@ fn query(
         name!(signals, pgrx::JsonB),
     ),
 > {
-    // Accepted but not applied here; Task 11 wires the weight override into RRF fusion.
-    let _ = weights;
+    use pg_raggraph_core::retrieval::rrf::RrfWeights;
+    let weights = match weights {
+        Some(jsonb) => {
+            let v = &jsonb.0;
+            RrfWeights {
+                vec: v
+                    .get("vec")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0),
+                bm25: v
+                    .get("bm25")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0),
+                graph: v
+                    .get("graph")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0),
+            }
+        }
+        None => RrfWeights::default(),
+    };
+
     let parsed_mode = match Mode::parse(mode) {
         Some(m) => m,
         None => {
@@ -71,6 +95,9 @@ fn query(
                     top_k.into(),
                     namespace.into(),
                     hops.into(),
+                    weights.vec.into(),
+                    weights.bm25.into(),
+                    weights.graph.into(),
                 ],
             )
             .expect("pgrg.query: select failed")

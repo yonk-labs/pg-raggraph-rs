@@ -12,9 +12,14 @@
 //!   $3 = `top_k` int
 //!   $4 = namespace text
 //!   $5 = hops int
+//!   $6 = `vec_weight` float8 (RRF lane weight; default 1.0)
+//!   $7 = `bm25_weight` float8 (default 1.0)
+//!   $8 = `graph_weight` float8 (default 1.0)
 //!
 //! RRF k=60 is hard-coded per spec §4 line 164 and Constraint Always
 //! ("single SQL statement matching spec §4 byte-for-byte semantically").
+//! Per-lane weights flow through positional binds so the SQL template stays
+//! constant across calls (SC-010: weights JSONB override changes scores).
 //!
 //! SC-006 (hops=0 excludes graph lane): the recursive walker's base case
 //! emits seeds at d=0 regardless of `$5`, so without an extra runtime gate
@@ -86,12 +91,12 @@ WITH RECURSIVE
     GROUP BY m.chunk_id LIMIT 50
   ),
   fused AS (
-    SELECT id, SUM(1.0 / (60 + rk)) AS score,
-           jsonb_agg(jsonb_build_object('lane', lane, 'rk', rk)) AS sigs
+    SELECT id, SUM(w * (1.0 / (60 + rk))) AS score,
+           jsonb_agg(jsonb_build_object('lane', lane, 'rk', rk, 'w', w)) AS sigs
     FROM (
-      SELECT id, rk, 'vec'   AS lane FROM vec
-      UNION ALL SELECT id, rk, 'bm25'  FROM bm
-      UNION ALL SELECT id, rk, 'graph' FROM graph
+      SELECT id, rk, 'vec'   AS lane, $6::float8 AS w FROM vec
+      UNION ALL SELECT id, rk, 'bm25',  $7::float8 FROM bm
+      UNION ALL SELECT id, rk, 'graph', $8::float8 FROM graph
     ) u
     GROUP BY id
   )

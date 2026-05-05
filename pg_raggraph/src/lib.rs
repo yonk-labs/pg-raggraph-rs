@@ -747,6 +747,58 @@ mod tests {
         );
         assert_eq!(id, Some(expected));
     }
+
+    #[pg_test]
+    fn rrf_score_matches_hand_computed_with_default_weights() {
+        // SC-005: emitted score must equal SUM(w * 1/(60+rk)) over the lane signals.
+        // With default weights (1.0 each), the score is reproducible from the
+        // signals JSONB alone — the strongest correctness gate for RRF fusion.
+        load_minimal_fixture_for_query("rrf_default_ns");
+        let row: Option<(pgrx::JsonB, f64)> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT signals, score FROM pgrg.query('alpha auth module', NULL, 5, 'rrf_default_ns', 1, NULL, 'hybrid') LIMIT 1",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .next()
+                .map(|r| (
+                    r.get::<pgrx::JsonB>(1).unwrap().unwrap(),
+                    r.get::<f64>(2).unwrap().unwrap_or(0.0),
+                ))
+        });
+        let (sigs, score) = row.expect("must return row");
+        let arr = sigs.0.as_array().unwrap();
+        let mut expected: f64 = 0.0;
+        for s in arr {
+            let rk = s["rk"].as_i64().unwrap();
+            let w = s["w"].as_f64().unwrap();
+            #[allow(clippy::cast_precision_loss)]
+            let rk_f = rk as f64;
+            expected += w * (1.0 / (60.0 + rk_f));
+        }
+        assert!(
+            (score - expected).abs() < 1e-9,
+            "RRF score {score} != hand-computed {expected} from signals {arr:?}"
+        );
+    }
+
+    #[pg_test]
+    fn weights_override_zeros_bm25_doubles_vec() {
+        // SC-010: weights JSONB override changes the emitted score.
+        load_minimal_fixture_for_query("rrf_weights_ns");
+        let default_score: Option<f64> = Spi::get_one(
+            "SELECT score FROM pgrg.query('alpha', NULL, 5, 'rrf_weights_ns', 1, NULL, 'hybrid') LIMIT 1",
+        ).unwrap();
+        let override_score: Option<f64> = Spi::get_one(
+            "SELECT score FROM pgrg.query('alpha', NULL, 5, 'rrf_weights_ns', 1, '{\"vec\":2.0,\"bm25\":0.0,\"graph\":1.0}'::jsonb, 'hybrid') LIMIT 1",
+        ).unwrap();
+        assert!(
+            default_score != override_score,
+            "weight override must change score (default={default_score:?}, override={override_score:?})"
+        );
+    }
 }
 
 #[cfg(test)]
