@@ -10,6 +10,7 @@ mod admin;
 mod embedding;
 mod gucs;
 mod ingest_extracted;
+mod retrieval;
 
 /// Called by PostgreSQL when the extension shared library is loaded.
 /// Registers GUCs so they are available before CREATE EXTENSION runs.
@@ -364,6 +365,83 @@ mod tests {
             Spi::get_one("SELECT count(*) FROM pgrg.ingest_jobs WHERE namespace = 'fix_ns'")
                 .unwrap();
         assert_eq!(jobs, Some(0), "ingest_extracted must NOT enqueue jobs");
+    }
+
+    fn load_minimal_fixture_for_query(ns: &str) {
+        // Helper used by query tests: load 3 chunks (alpha/beta/gamma), 1 entity, 1 chunk_entity.
+        Spi::run(&format!("SELECT pgrg.namespace_create('{ns}')")).unwrap();
+        let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
+            .unwrap()
+            .unwrap();
+        let mk_emb = |seed: f32| {
+            let mut s = String::from("[");
+            for i in 0..dim {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("{}", seed + (i as f32) * 0.0001));
+            }
+            s.push(']');
+            s
+        };
+        let path = format!("/tmp/pgrg_q_{ns}.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                concat!(
+                    r#"{{"kind":"document","id":"a0000000-0000-0000-0000-000000000010","namespace":"{ns}","source":"d.md","content_hash":"h-q-{ns}"}}"#, "\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000011","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000010","ord":0,"text":"alpha auth module","token_count":3,"embedding":{e1}}}"#, "\n",
+                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000012","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000010","ord":1,"text":"beta gamma","token_count":2,"embedding":{e2}}}"#, "\n",
+                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000020","namespace":"{ns}","name":"alpha","kind_label":"module","name_emb":{e3}}}"#, "\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000011","entity_id":"e0000000-0000-0000-0000-000000000020","confidence":0.9,"classification":"extracted"}}"#, "\n",
+                ),
+                ns = ns,
+                e1 = mk_emb(0.1),
+                e2 = mk_emb(0.5),
+                e3 = mk_emb(0.1),
+            ),
+        )
+        .expect("fixture write");
+        Spi::run(&format!("SELECT pgrg.ingest_extracted('{path}', '{ns}')")).unwrap();
+    }
+
+    #[pg_test]
+    fn query_hybrid_returns_documented_columns() {
+        // SC-001: column shape (chunk_id, document_id, text, score, signals) in descending score order.
+        load_minimal_fixture_for_query("q_hybrid_ns");
+        let json: pgrx::JsonB = Spi::get_one(
+            "SELECT to_jsonb(t) FROM pgrg.query('alpha', NULL, 5, 'q_hybrid_ns', 1, NULL, 'hybrid') t LIMIT 1",
+        )
+        .unwrap()
+        .expect("query returned no rows");
+        let obj = json.0.as_object().unwrap();
+        for k in ["chunk_id", "document_id", "text", "score", "signals"] {
+            assert!(obj.contains_key(k), "result missing key {k}");
+        }
+        let signals = obj["signals"].as_array().expect("signals is array");
+        assert!(!signals.is_empty(), "signals must be populated");
+    }
+
+    #[pg_test]
+    fn query_hybrid_descending_score_order() {
+        load_minimal_fixture_for_query("q_order_ns");
+        let scores: Vec<f64> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT score FROM pgrg.query('alpha auth', NULL, 5, 'q_order_ns', 1, NULL, 'hybrid')",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| r.get::<f64>(1).unwrap().unwrap_or(0.0))
+                .collect()
+        });
+        for w in scores.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "results must be descending by score, got {scores:?}"
+            );
+        }
     }
 
     #[pg_test]
