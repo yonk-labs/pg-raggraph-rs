@@ -9,6 +9,7 @@ use pgrx::prelude::*;
 mod admin;
 mod embedding;
 mod gucs;
+mod ingest_extracted;
 
 /// Called by PostgreSQL when the extension shared library is loaded.
 /// Registers GUCs so they are available before CREATE EXTENSION runs.
@@ -314,6 +315,55 @@ mod tests {
         assert_eq!(n, Some(0), "test precondition: no providers rows");
         // If this errors, SC-011 fails.
         let _: Option<i32> = Spi::get_one("SELECT vector_dims(pgrg.embed('q'))").unwrap();
+    }
+
+    #[pg_test]
+    fn ingest_extracted_loads_fixture_into_tables() {
+        // SC-003: load fixture, verify all four tables populated, verify
+        // ingest_jobs is NOT touched.
+        Spi::run("SELECT pgrg.namespace_create('fix_ns')").unwrap();
+
+        // Build a 384-dim fixture so embeddings match the GUC dim.
+        let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
+            .unwrap()
+            .unwrap();
+        let mut emb = String::from("[");
+        for i in 0..dim {
+            if i > 0 {
+                emb.push(',');
+            }
+            emb.push_str(&format!("{}", (i as f32) * 0.0001));
+        }
+        emb.push(']');
+        let emb_chunk = format!(
+            r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000003","namespace":"fix_ns","document_id":"a0000000-0000-0000-0000-000000000001","ord":2,"text":"epsilon zeta","token_count":2,"embedding":{emb}}}"#
+        );
+        let path = "/tmp/pgrg_fix_test.jsonl";
+        std::fs::write(
+            path,
+            format!(
+                "{}\n{}\n",
+                r#"{"kind":"document","id":"a0000000-0000-0000-0000-000000000001","namespace":"fix_ns","source":"d.md","content_hash":"h-fix-1"}"#,
+                emb_chunk,
+            ),
+        )
+        .expect("write fixture");
+
+        Spi::run("SELECT pgrg.ingest_extracted('/tmp/pgrg_fix_test.jsonl', 'fix_ns')").unwrap();
+
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'fix_ns'").unwrap();
+        assert_eq!(docs, Some(1));
+
+        let chunks: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.chunks WHERE namespace = 'fix_ns'").unwrap();
+        assert_eq!(chunks, Some(1));
+
+        // SC-003: ingest_jobs MUST be unchanged.
+        let jobs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.ingest_jobs WHERE namespace = 'fix_ns'")
+                .unwrap();
+        assert_eq!(jobs, Some(0), "ingest_extracted must NOT enqueue jobs");
     }
 
     #[pg_test]

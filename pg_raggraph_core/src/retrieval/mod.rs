@@ -4,6 +4,7 @@
 //! Per mission brief Constraint Always: all retrieval logic that is not
 //! strictly pgrx FFI lives here.
 
+pub mod fixture;
 pub mod mode;
 pub mod rrf;
 
