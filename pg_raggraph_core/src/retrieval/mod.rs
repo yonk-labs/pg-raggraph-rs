@@ -6,6 +6,7 @@
 
 pub mod fixture;
 pub mod mode;
+pub mod query_sql;
 pub mod rrf;
 
 pub use mode::Mode;
