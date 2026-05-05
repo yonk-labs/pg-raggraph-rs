@@ -894,6 +894,46 @@ mod tests {
 
         Spi::run("SET pg_raggraph.parity_mode = false").unwrap();
     }
+
+    #[pg_test]
+    fn e2e_ingest_extracted_then_query() {
+        load_minimal_fixture_for_query("e2e_demo");
+
+        let start = std::time::Instant::now();
+        let rows: Vec<(String, f64)> = Spi::connect(|client| {
+            client
+                .select(
+                    "SELECT text, score FROM pgrg.query('what is the auth module', NULL, 5, 'e2e_demo', 1, NULL, 'hybrid')",
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| {
+                    (
+                        r.get::<String>(1).unwrap().unwrap_or_default(),
+                        r.get::<f64>(2).unwrap().unwrap_or(0.0),
+                    )
+                })
+                .collect()
+        });
+        let elapsed = start.elapsed();
+
+        assert!(
+            !rows.is_empty(),
+            "E2E: query must return at least one ranked result"
+        );
+        assert!(
+            elapsed.as_millis() < 1000,
+            "E2E: query latency must be < 1s on the small fixture, took {elapsed:?}"
+        );
+
+        for (text, score) in &rows {
+            assert!(
+                *score > 0.0,
+                "score must be positive, got {score} for `{text}`"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
