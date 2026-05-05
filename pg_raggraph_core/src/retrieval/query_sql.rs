@@ -38,7 +38,7 @@ pub fn build_query_sql(mode: Mode) -> String {
 
     format!(
         r"
-WITH
+WITH RECURSIVE
   q_emb AS (SELECT pgrg.embed($1) AS v),
   vec AS (
     SELECT c.id, ROW_NUMBER() OVER (ORDER BY c.embedding <=> (SELECT v FROM q_emb)) AS rk
@@ -64,10 +64,9 @@ WITH
   walked AS (
     SELECT id, 0 AS d FROM seeds
     UNION ALL
-    SELECT r.dst_id, w.d + 1 FROM pgrg.relationships r JOIN walked w ON r.src_id = w.id
-    WHERE w.d < $5
-    UNION ALL
-    SELECT r.src_id, w.d + 1 FROM pgrg.relationships r JOIN walked w ON r.dst_id = w.id
+    SELECT CASE WHEN r.src_id = w.id THEN r.dst_id ELSE r.src_id END, w.d + 1
+    FROM pgrg.relationships r JOIN walked w
+      ON (r.src_id = w.id OR r.dst_id = w.id)
     WHERE w.d < $5
   ),
   graph AS (
@@ -89,7 +88,7 @@ WITH
     ) u
     GROUP BY id
   )
-SELECT c.id, c.document_id, c.text, f.score, f.sigs
+SELECT c.id, c.document_id, c.text, f.score::float8 AS score, f.sigs
 FROM fused f JOIN pgrg.chunks c ON c.id = f.id
 ORDER BY f.score DESC LIMIT $3
 "

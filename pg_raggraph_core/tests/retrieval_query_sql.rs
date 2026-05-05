@@ -81,3 +81,49 @@ fn sql_uses_parameterized_args_not_concat() {
         assert!(sql.contains(p), "missing positional param {p}");
     }
 }
+
+#[test]
+fn sql_uses_with_recursive_for_graph_walk() {
+    // The graph CTE self-references via the `walked` recursive walker.
+    // Without WITH RECURSIVE, PG errors at execution time with
+    // `relation "walked" does not exist`. T6's substring-only tests
+    // missed this; T7 caught it. Pin the contract here.
+    let sql = build_query_sql(Mode::Hybrid);
+    assert!(
+        sql.contains("WITH RECURSIVE"),
+        "fused query SQL must use WITH RECURSIVE for graph self-reference"
+    );
+}
+
+#[test]
+fn sql_score_is_cast_to_float8() {
+    // PG infers `SUM(1.0 / (60 + rk))` as numeric. Without an explicit cast
+    // to float8, pgrx-side `r.get::<f64>` errors with
+    // `IncompatibleTypes { rust_type: "f64", datum_type: "numeric" }`.
+    // Regression guard for T7's discovery.
+    let sql = build_query_sql(Mode::Hybrid);
+    assert!(
+        sql.contains("f.score::float8"),
+        "score column must be cast to float8 for pgrx f64 binding compatibility"
+    );
+}
+
+#[test]
+fn sql_recursive_cte_has_single_recursive_term() {
+    // PG requires a recursive CTE be expressible as `non-recursive UNION ALL recursive`.
+    // T6 originally emitted three branches (one base + two recursive), which PG rejects
+    // with `recursive reference to query "walked" must not appear within its non-recursive
+    // term`. Encode undirected traversal via `OR` in the JOIN instead.
+    let sql = build_query_sql(Mode::Hybrid);
+    let union_all_count = sql.matches("UNION ALL").count();
+    // walked has exactly one UNION ALL between its base and recursive term;
+    // fused has two more (joining bm and graph onto vec). Total expected: 3.
+    assert_eq!(
+        union_all_count, 3,
+        "expected 3 UNION ALLs total (1 in walked, 2 in fused), got {union_all_count}"
+    );
+    assert!(
+        sql.contains("r.src_id = w.id OR r.dst_id = w.id"),
+        "recursive walker must use OR-join to keep a single recursive term"
+    );
+}
