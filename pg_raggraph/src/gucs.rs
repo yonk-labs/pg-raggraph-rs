@@ -69,7 +69,7 @@ pub fn register() {
         c"Use IVFFlat instead of HNSW for deterministic parity benchmarks",
         c"",
         &PARITY_MODE,
-        GucContext::Userset,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_string_guc(
@@ -77,7 +77,7 @@ pub fn register() {
         c"File path to AES-GCM master key for credential encryption",
         c"",
         &MASTER_KEY_PATH,
-        GucContext::Sighup,
+        GucContext::Suset,
         GucFlags::default(),
     );
     GucRegistry::define_string_guc(
