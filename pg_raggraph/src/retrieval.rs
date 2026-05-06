@@ -35,7 +35,8 @@ use pgrx::prelude::*;
 /// Returns one row per fused chunk: (chunk_id, document_id, text, score, signals).
 ///
 /// `weights` is a JSONB object with optional keys `vec` / `bm25` / `graph`
-/// (float8); missing keys default to 1.0. NULL means "use defaults".
+/// (float8); missing keys default to 1.0; negative values clamp to 0.0.
+/// NULL means "use defaults".
 #[pg_extern]
 fn query(
     q: &str,
@@ -63,15 +64,18 @@ fn query(
                 vec: v
                     .get("vec")
                     .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(1.0),
+                    .unwrap_or(1.0)
+                    .max(0.0),
                 bm25: v
                     .get("bm25")
                     .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(1.0),
+                    .unwrap_or(1.0)
+                    .max(0.0),
                 graph: v
                     .get("graph")
                     .and_then(serde_json::Value::as_f64)
-                    .unwrap_or(1.0),
+                    .unwrap_or(1.0)
+                    .max(0.0),
             }
         }
         None => RrfWeights::default(),

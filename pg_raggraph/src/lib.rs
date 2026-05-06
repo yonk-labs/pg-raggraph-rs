@@ -843,6 +843,24 @@ mod tests {
     }
 
     #[pg_test]
+    fn weights_negative_input_clamped_to_zero() {
+        load_minimal_fixture_for_query("neg_w_ns");
+        // Negative weights should clamp to 0.0 — bm25=-1.0 acts like bm25=0.0.
+        let zero_score: Option<f64> = Spi::get_one(
+            "SELECT score FROM pgrg.query('alpha', NULL, 5, 'neg_w_ns', 1, '{\"vec\":1.0,\"bm25\":0.0,\"graph\":1.0}'::jsonb, 'hybrid') LIMIT 1",
+        )
+        .unwrap();
+        let neg_score: Option<f64> = Spi::get_one(
+            "SELECT score FROM pgrg.query('alpha', NULL, 5, 'neg_w_ns', 1, '{\"vec\":1.0,\"bm25\":-1.0,\"graph\":1.0}'::jsonb, 'hybrid') LIMIT 1",
+        )
+        .unwrap();
+        assert_eq!(
+            zero_score, neg_score,
+            "negative weights must clamp to 0.0; bm25=0.0 and bm25=-1.0 must score identically"
+        );
+    }
+
+    #[pg_test]
     fn signals_shape_is_lane_rk_w_tuple() {
         // Constraint "Ask First": signals shape change requires approval.
         // Plan 2's shape: jsonb_agg(jsonb_build_object('lane',lane,'rk',rk,'w',w)).

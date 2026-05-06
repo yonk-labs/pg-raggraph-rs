@@ -7,7 +7,8 @@
 //! pgrx 0.17 has no native pgvector type binding, so the Rust function
 //! returns a `text` literal of the form `[v1,v2,...]` and a thin SQL
 //! wrapper (`pgrg.embed`) casts it to `public.vector`. The Rust-side
-//! function is exposed as `pgrg.embed_text` and is an internal detail.
+//! function is exposed as `pgrg._embed_text` (Plan 1 underscore convention
+//! for internal helpers) and is an internal detail.
 
 use pgrx::prelude::*;
 
@@ -30,12 +31,14 @@ fn vector_literal(v: &[f32]) -> String {
     s
 }
 
-/// `pgrg.embed_text(text, namespace)` — internal text form of the embedder.
+/// `pgrg._embed_text(text, namespace)` — internal text form of the embedder.
 ///
 /// Returns the embedding as a `[v1,v2,...]` literal that pgvector parses.
 /// User-facing callers should use `pgrg.embed(...)` which casts to `vector`.
+/// Leading underscore follows Plan 1 convention for internal SQL helpers
+/// (e.g., `pgrg._maybe_apply_parity_indexes`).
 #[pg_extern]
-fn embed_text(text: &str, _namespace: default!(&str, "'default'")) -> String {
+fn _embed_text(text: &str, _namespace: default!(&str, "'default'")) -> String {
     // EMBED_DIM is i32 GUC bounded [64, 4096] (see gucs.rs); always non-negative.
     let dim_i32 = crate::gucs::EMBED_DIM.get();
     let dim: usize = usize::try_from(dim_i32).unwrap_or(384);
@@ -45,7 +48,7 @@ fn embed_text(text: &str, _namespace: default!(&str, "'default'")) -> String {
 
 // SQL-only wrapper: `pgrg.embed(text, namespace) RETURNS public.vector`.
 //
-// Casts the text literal returned by `pgrg.embed_text` to `public.vector`.
+// Casts the text literal returned by `pgrg._embed_text` to `public.vector`.
 // Keeps `pgrg.embed` as the user-facing surface (mission brief SC-002).
 ::pgrx::extension_sql!(
     r#"
@@ -56,9 +59,9 @@ fn embed_text(text: &str, _namespace: default!(&str, "'default'")) -> String {
     LANGUAGE sql
     IMMUTABLE STRICT
     AS $$
-        SELECT pgrg.embed_text("text", "namespace")::public.vector
+        SELECT pgrg._embed_text("text", "namespace")::public.vector
     $$;
     "#,
     name = "embed_vector_wrapper",
-    requires = [embed_text]
+    requires = [_embed_text]
 );
