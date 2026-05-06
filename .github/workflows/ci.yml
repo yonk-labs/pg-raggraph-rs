@@ -57,4 +57,11 @@ jobs:
           PG_CONFIG="$PGRX_PG_CONFIG" make install
 
       - name: pgrx test
+        # Serial execution: pgrg._maybe_apply_parity_indexes() does DROP+CREATE
+        # on shared chunks/entities indexes; concurrent parity-mode tests deadlock
+        # on lock acquisition. Production impact is nil (parity_mode flips at most
+        # once per DB, never concurrently). Refactoring the helper to use ordered
+        # LOCK TABLE acquisition is a separate follow-up.
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo pgrx test pg17 -p pg_raggraph
