@@ -74,10 +74,10 @@ fn sql_metadata_predicate_inside_each_lane() {
 
 #[test]
 fn sql_uses_parameterized_args_not_concat() {
-    // Constraint Always: positional parameters $1..$5; no `format!` interpolation
-    // of user input.
+    // Constraint Always: positional parameters $1..$8; no `format!` interpolation
+    // of user input. T11 added $6/$7/$8 for per-lane RRF weights.
     let sql = build_query_sql(Mode::Hybrid);
-    for p in ["$1", "$2", "$3", "$4", "$5"] {
+    for p in ["$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8"] {
         assert!(sql.contains(p), "missing positional param {p}");
     }
 }

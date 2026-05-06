@@ -331,6 +331,27 @@ mod tests {
     }
 
     #[pg_test]
+    fn parity_mode_swap_skipped_when_data_exists() {
+        // DC-004: existing namespaces must not get re-indexed when parity_mode flips.
+        // Load a chunk first so has_chunks=true at the moment we flip the GUC.
+        load_minimal_fixture_for_query("dc004_pre");
+        // Now flip parity_mode and create a NEW namespace.
+        Spi::run("SET pg_raggraph.parity_mode = true").unwrap();
+        Spi::run("SELECT pgrg.namespace_create('dc004_post')").unwrap();
+        // Verify HNSW indexes are still in place (NOT swapped to IVFFlat).
+        let def: Option<String> = Spi::get_one(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE schemaname = 'pgrg' AND indexname = 'chunks_embedding_hnsw'",
+        )
+        .unwrap();
+        assert!(
+            def.unwrap_or_default().contains("USING hnsw"),
+            "DC-004: existing chunks must keep HNSW even when parity_mode flips later"
+        );
+        Spi::run("SET pg_raggraph.parity_mode = false").unwrap();
+    }
+
+    #[pg_test]
     fn embed_returns_correct_dim_vector() {
         // SC-002: pgrg.embed returns a vector(N) where N = pg_raggraph.embed_dim.
         // pgvector returns vectors as text in the form '[v1,v2,...]'; the dim
@@ -410,7 +431,10 @@ mod tests {
     }
 
     fn load_minimal_fixture_for_query(ns: &str) {
-        // Helper used by query tests: load 3 chunks (alpha/beta/gamma), 1 entity, 1 chunk_entity.
+        // Helper used by query tests: load 2 chunks, 1 entity, 1 chunk_entity.
+        // UUIDs are derived from the namespace string so parallel tests do
+        // not collide on documents.id (a global PK).
+        use pg_raggraph_core::test_helpers::ns_uuid;
         Spi::run(&format!("SELECT pgrg.namespace_create('{ns}')")).unwrap();
         let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
             .unwrap()
@@ -439,18 +463,26 @@ mod tests {
             alpha_lit.push_str(&format!("{x}"));
         }
         alpha_lit.push(']');
+        let doc_id = ns_uuid(ns, 0x10);
+        let chunk1_id = ns_uuid(ns, 0x11);
+        let chunk2_id = ns_uuid(ns, 0x12);
+        let entity_id = ns_uuid(ns, 0x20);
         let path = format!("/tmp/pgrg_q_{ns}.jsonl");
         std::fs::write(
             &path,
             format!(
                 concat!(
-                    r#"{{"kind":"document","id":"a0000000-0000-0000-0000-000000000010","namespace":"{ns}","source":"d.md","content_hash":"h-q-{ns}"}}"#, "\n",
-                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000011","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000010","ord":0,"text":"alpha auth module","token_count":3,"embedding":{e1}}}"#, "\n",
-                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000012","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000010","ord":1,"text":"beta gamma","token_count":2,"embedding":{e2}}}"#, "\n",
-                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000020","namespace":"{ns}","name":"alpha","kind_label":"module","name_emb":{e3}}}"#, "\n",
-                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000011","entity_id":"e0000000-0000-0000-0000-000000000020","confidence":0.9,"classification":"extracted"}}"#, "\n",
+                    r#"{{"kind":"document","id":"{doc}","namespace":"{ns}","source":"d.md","content_hash":"h-q-{ns}"}}"#, "\n",
+                    r#"{{"kind":"chunk","id":"{c1}","namespace":"{ns}","document_id":"{doc}","ord":0,"text":"alpha auth module","token_count":3,"embedding":{e1}}}"#, "\n",
+                    r#"{{"kind":"chunk","id":"{c2}","namespace":"{ns}","document_id":"{doc}","ord":1,"text":"beta gamma","token_count":2,"embedding":{e2}}}"#, "\n",
+                    r#"{{"kind":"entity","id":"{e}","namespace":"{ns}","name":"alpha","kind_label":"module","name_emb":{e3}}}"#, "\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"{c1}","entity_id":"{e}","confidence":0.9,"classification":"extracted"}}"#, "\n",
                 ),
                 ns = ns,
+                doc = doc_id,
+                c1 = chunk1_id,
+                c2 = chunk2_id,
+                e = entity_id,
                 e1 = mk_emb(0.1),
                 e2 = mk_emb(0.5),
                 e3 = alpha_lit,
@@ -566,6 +598,9 @@ mod tests {
     fn load_chain_fixture(ns: &str) {
         // 3-node chain A -> B -> C, each entity attached to one chunk.
         // Seed query embedding will match entity A so hops control reachability.
+        // UUIDs are derived from the namespace string so parallel tests do
+        // not collide on documents.id (a global PK).
+        use pg_raggraph_core::test_helpers::ns_uuid;
         Spi::run(&format!("SELECT pgrg.namespace_create('{ns}')")).unwrap();
         let dim: i32 = Spi::get_one::<i32>("SELECT current_setting('pg_raggraph.embed_dim')::int")
             .unwrap()
@@ -600,27 +635,44 @@ mod tests {
         let aaa_lit = lit_for("AAA");
         let bbb_lit = lit_for("BBB");
         let ccc_lit = lit_for("CCC");
+        let doc_id = ns_uuid(ns, 0x50);
+        let c1_id = ns_uuid(ns, 0x51);
+        let c2_id = ns_uuid(ns, 0x52);
+        let c3_id = ns_uuid(ns, 0x53);
+        let e1_id = ns_uuid(ns, 0x61);
+        let e2_id = ns_uuid(ns, 0x62);
+        let e3_id = ns_uuid(ns, 0x63);
+        let r1_id = ns_uuid(ns, 0x71);
+        let r2_id = ns_uuid(ns, 0x72);
         let path = format!("/tmp/pgrg_chain_{ns}.jsonl");
         // Three chunks (one per entity), three entities A/B/C, two relationships A->B, B->C.
         std::fs::write(
             &path,
             format!(
                 concat!(
-                    r#"{{"kind":"document","id":"a0000000-0000-0000-0000-000000000050","namespace":"{ns}","source":"d.md","content_hash":"h-chain-{ns}"}}"#,"\n",
-                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000051","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":0,"text":"chunk-a","token_count":1,"embedding":{ea}}}"#,"\n",
-                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000052","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":1,"text":"chunk-b","token_count":1,"embedding":{eb}}}"#,"\n",
-                    r#"{{"kind":"chunk","id":"c0000000-0000-0000-0000-000000000053","namespace":"{ns}","document_id":"a0000000-0000-0000-0000-000000000050","ord":2,"text":"chunk-c","token_count":1,"embedding":{ec}}}"#,"\n",
-                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000061","namespace":"{ns}","name":"AAA","kind_label":"node","name_emb":{ea_ent}}}"#,"\n",
-                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000062","namespace":"{ns}","name":"BBB","kind_label":"node","name_emb":{eb_ent}}}"#,"\n",
-                    r#"{{"kind":"entity","id":"e0000000-0000-0000-0000-000000000063","namespace":"{ns}","name":"CCC","kind_label":"node","name_emb":{ec_ent}}}"#,"\n",
-                    // Note: plan literal `r0000000-...` is not a valid hex UUID; using `f0000000-...` instead.
-                    r#"{{"kind":"relationship","id":"f0000000-0000-0000-0000-000000000071","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000061","dst_id":"e0000000-0000-0000-0000-000000000062","kind_label":"next","weight":1.0}}"#,"\n",
-                    r#"{{"kind":"relationship","id":"f0000000-0000-0000-0000-000000000072","namespace":"{ns}","src_id":"e0000000-0000-0000-0000-000000000062","dst_id":"e0000000-0000-0000-0000-000000000063","kind_label":"next","weight":1.0}}"#,"\n",
-                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000051","entity_id":"e0000000-0000-0000-0000-000000000061","confidence":1.0,"classification":"extracted"}}"#,"\n",
-                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000052","entity_id":"e0000000-0000-0000-0000-000000000062","confidence":1.0,"classification":"extracted"}}"#,"\n",
-                    r#"{{"kind":"chunk_entity","chunk_id":"c0000000-0000-0000-0000-000000000053","entity_id":"e0000000-0000-0000-0000-000000000063","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                    r#"{{"kind":"document","id":"{doc}","namespace":"{ns}","source":"d.md","content_hash":"h-chain-{ns}"}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"{c1}","namespace":"{ns}","document_id":"{doc}","ord":0,"text":"chunk-a","token_count":1,"embedding":{ea}}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"{c2}","namespace":"{ns}","document_id":"{doc}","ord":1,"text":"chunk-b","token_count":1,"embedding":{eb}}}"#,"\n",
+                    r#"{{"kind":"chunk","id":"{c3}","namespace":"{ns}","document_id":"{doc}","ord":2,"text":"chunk-c","token_count":1,"embedding":{ec}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"{e1}","namespace":"{ns}","name":"AAA","kind_label":"node","name_emb":{ea_ent}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"{e2}","namespace":"{ns}","name":"BBB","kind_label":"node","name_emb":{eb_ent}}}"#,"\n",
+                    r#"{{"kind":"entity","id":"{e3}","namespace":"{ns}","name":"CCC","kind_label":"node","name_emb":{ec_ent}}}"#,"\n",
+                    r#"{{"kind":"relationship","id":"{r1}","namespace":"{ns}","src_id":"{e1}","dst_id":"{e2}","kind_label":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"relationship","id":"{r2}","namespace":"{ns}","src_id":"{e2}","dst_id":"{e3}","kind_label":"next","weight":1.0}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"{c1}","entity_id":"{e1}","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"{c2}","entity_id":"{e2}","confidence":1.0,"classification":"extracted"}}"#,"\n",
+                    r#"{{"kind":"chunk_entity","chunk_id":"{c3}","entity_id":"{e3}","confidence":1.0,"classification":"extracted"}}"#,"\n",
                 ),
                 ns = ns,
+                doc = doc_id,
+                c1 = c1_id,
+                c2 = c2_id,
+                c3 = c3_id,
+                e1 = e1_id,
+                e2 = e2_id,
+                e3 = e3_id,
+                r1 = r1_id,
+                r2 = r2_id,
                 ea = mk_emb(0.10),
                 eb = mk_emb(0.20),
                 ec = mk_emb(0.30),

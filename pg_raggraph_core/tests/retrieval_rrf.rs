@@ -114,3 +114,15 @@ fn rrf_empty_input_yields_empty_output() {
     let scored = fuse(&[], &RrfWeights::default());
     assert!(scored.is_empty());
 }
+
+#[test]
+fn rrf_unknown_lane_contributes_zero() {
+    let hits = vec![LaneHit {
+        id: 1,
+        lane: "metadata",
+        rk: 1,
+    }];
+    let scored = fuse(&hits, &RrfWeights::default());
+    assert_eq!(scored.len(), 1);
+    assert!((scored[0].score - 0.0).abs() < 1e-12);
+}

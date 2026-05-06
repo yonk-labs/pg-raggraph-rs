@@ -25,3 +25,8 @@ fn mode_as_str_roundtrip() {
         assert_eq!(Mode::parse(m.as_str()), Some(m));
     }
 }
+
+#[test]
+fn mode_default_is_hybrid() {
+    assert_eq!(Mode::default(), Mode::Hybrid);
+}
