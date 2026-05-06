@@ -45,6 +45,11 @@ pub extern "C-unwind" fn _PG_init() {
     name = "retrieval_indexes",
     requires = ["create_indexes"]
 );
+::pgrx::extension_sql_file!(
+    "../sql/migrations/005_status_check_atomicity.sql",
+    name = "status_check_atomicity",
+    requires = ["retrieval_indexes"]
+);
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
@@ -294,6 +299,20 @@ mod tests {
         );
 
         Spi::run("SET pg_raggraph.parity_mode = false").unwrap();
+    }
+
+    #[pg_test]
+    fn ingest_jobs_status_check_rejects_unknown_value() {
+        // Plan 1+2 carry-forward: status enumeration is enforced at the schema level.
+        Spi::run("SELECT pgrg.namespace_create('status_check_ns')").unwrap();
+        let res = std::panic::catch_unwind(|| {
+            Spi::run(
+                "INSERT INTO pgrg.ingest_jobs (id, status, source, namespace) \
+                 VALUES ('55555555-5555-5555-5555-555555555555', 'unknown_status', 't.md', 'status_check_ns')",
+            )
+            .unwrap();
+        });
+        assert!(res.is_err(), "unknown status must violate CHECK constraint");
     }
 
     #[pg_test]
