@@ -5,6 +5,7 @@
 
 pub mod embedding;
 pub mod error;
+pub mod ingest;
 pub mod retrieval;
 pub mod types;
 
