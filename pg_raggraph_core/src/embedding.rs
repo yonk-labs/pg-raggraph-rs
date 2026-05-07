@@ -1,16 +1,77 @@
-//! Deterministic test-only embedder.
+//! Embedding backend abstraction + deterministic test impl.
 //!
-//! Plan 2 ships this as the embedding contract for `pgrg.embed`. Plan 3
-//! introduces the real model loader (chunkshop `hf_cache` for
-//! `BAAI/bge-small-en-v1.5`); the SQL surface (`pgrg.embed`) does not
-//! change. Until Plan 3, all retrieval tests use this embedder.
+//! Plan 2 shipped `deterministic_embed` as a free function. Plan 3 introduces
+//! the `EmbeddingBackend` trait so a real ONNX-backed impl (`OnnxEmbedder`,
+//! Task 5) can replace the deterministic one in production builds while
+//! `pg_test` and `cargo test` continue to use the deterministic impl for
+//! byte-stable fixture parity.
 //!
 //! Mission brief SC-002: byte-identical output for identical input, dim
 //! equal to the `pgrg.embed_dim` GUC.
-//! Mission brief SC-011: no LLM provider lookup, no network — runs on a
-//! fresh PG with no `pgrg.providers` rows.
+//! Mission brief SC-009: production embedder loaded once per worker process
+//! at startup; never per-job. The trait is `Send + Sync + 'static` to permit
+//! storage in a worker-local `OnceCell`.
 
+use crate::error::CoreResult;
 use sha2::{Digest, Sha256};
+
+/// Trait for any embedding backend the worker can load.
+///
+/// Implementations must be cheap to share by `&self` (typically wrapped in
+/// `Arc` internally) and thread-safe (`Send + Sync`) so a single backend
+/// instance can serve concurrent jobs within a worker.
+pub trait EmbeddingBackend: Send + Sync + 'static {
+    /// Vector dimension this backend produces. Must match `pgrg.embed_dim`.
+    fn dim(&self) -> usize;
+
+    /// Embed a single text. Returns a `Vec<f32>` of length `self.dim()`.
+    ///
+    /// # Errors
+    /// Returns `CoreError` if the backend fails to produce an embedding
+    /// (e.g., ONNX session error, tokenizer failure). The deterministic
+    /// impl is infallible.
+    fn embed(&self, text: &str) -> CoreResult<Vec<f32>>;
+
+    /// Embed a batch. Default impl loops `embed`; ONNX backend overrides
+    /// for batched inference.
+    ///
+    /// # Errors
+    /// Returns the first `CoreError` encountered while embedding any input.
+    fn embed_batch(&self, texts: &[&str]) -> CoreResult<Vec<Vec<f32>>> {
+        texts.iter().map(|t| self.embed(t)).collect()
+    }
+}
+
+/// Deterministic SHA-256-derived embedder. Used by `cargo test`,
+/// `pgrx::pg_test`, and Plan 2's fixture loaders.
+#[derive(Debug, Clone)]
+pub struct DeterministicEmbedder {
+    dim: usize,
+}
+
+impl DeterministicEmbedder {
+    #[must_use]
+    pub fn new(dim: usize) -> Self {
+        Self { dim }
+    }
+}
+
+impl EmbeddingBackend for DeterministicEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn embed(&self, text: &str) -> CoreResult<Vec<f32>> {
+        Ok(deterministic_embed(text, self.dim))
+    }
+}
+
+/// Convenience: produce a `Box<dyn EmbeddingBackend>` for callers that
+/// need a trait object.
+#[must_use]
+pub fn deterministic_backend(dim: usize) -> Box<dyn EmbeddingBackend> {
+    Box::new(DeterministicEmbedder::new(dim))
+}
 
 /// Hash-derived deterministic embedding.
 ///
