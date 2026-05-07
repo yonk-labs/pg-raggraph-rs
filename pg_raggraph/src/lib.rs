@@ -302,6 +302,57 @@ mod tests {
     }
 
     #[pg_test]
+    fn ingest_jobs_payload_column_exists() {
+        // Spec §5: ingest_jobs.payload bytea for ingest_text/ingest_bytes carriage.
+        // Plan 1 schema declares this column; Plan 3 Task 1 locks the invariant
+        // with this guard so future schema edits cannot drop it without flipping
+        // a test.
+        let exists: Option<bool> = Spi::get_one(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema = 'pgrg' \
+                   AND table_name = 'ingest_jobs' \
+                   AND column_name = 'payload' \
+                   AND data_type = 'bytea')",
+        )
+        .unwrap();
+        assert_eq!(exists, Some(true), "ingest_jobs.payload bytea must exist");
+    }
+
+    #[pg_test]
+    fn ingest_jobs_attempt_count_column_exists() {
+        // Spec §5 + brief Desired Outcome: reaper bumps attempt_count, caps at 3.
+        // Locked as schema invariant by Plan 3 Task 1.
+        let exists: Option<bool> = Spi::get_one(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema = 'pgrg' \
+                   AND table_name = 'ingest_jobs' \
+                   AND column_name = 'attempt_count')",
+        )
+        .unwrap();
+        assert_eq!(exists, Some(true), "ingest_jobs.attempt_count must exist");
+    }
+
+    #[pg_test]
+    fn ingest_jobs_active_partial_index_exists() {
+        // Spec §5 line 254: partial index for the bg worker scan.
+        // Locked as schema invariant by Plan 3 Task 1.
+        let exists: Option<bool> = Spi::get_one(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM pg_indexes \
+                 WHERE schemaname = 'pgrg' \
+                   AND indexname = 'ingest_jobs_active_idx')",
+        )
+        .unwrap();
+        assert_eq!(
+            exists,
+            Some(true),
+            "ingest_jobs_active_idx partial index must exist"
+        );
+    }
+
+    #[pg_test]
     fn ingest_jobs_status_check_rejects_unknown_value() {
         // Plan 1+2 carry-forward: status enumeration is enforced at the schema level.
         Spi::run("SELECT pgrg.namespace_create('status_check_ns')").unwrap();
