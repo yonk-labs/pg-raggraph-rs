@@ -31,7 +31,7 @@ pub struct OnnxEmbedderConfig {
     pub expected_dim: usize,
 }
 
-/// ONNX embedder for sentence-transformers-style models (mean-pooled,
+/// ONNX embedder for sentence-transformers-style models (CLS-pooled,
 /// L2-normalized).
 ///
 /// The session is wrapped in a `Mutex` because `Session::run` requires
@@ -78,15 +78,12 @@ impl OnnxEmbedder {
         let session = builder
             .commit_from_file(&model_file)
             .map_err(|e| CoreError::InvalidConfig(format!("ONNX model load failed: {e}")))?;
+        let session_mutex = Mutex::new(session);
 
-        // Probe dim by running on a 1-token input. Cheap and deterministic.
-        let mut probe = Self {
-            session: Mutex::new(session),
-            tokenizer,
-            // Filled after probe.
-            dim: 0,
-        };
-        let probe_vec = probe.embed_with(&probe.session, "x")?;
+        // Probe dim by running on a short input. Cheap and deterministic.
+        // We pass `expected_dim` only as a sanity hint; the actual hidden
+        // dim is taken from the output tensor shape and validated below.
+        let probe_vec = embed_with(&session_mutex, &tokenizer, "probe", cfg.expected_dim)?;
         let actual_dim = probe_vec.len();
         if actual_dim != cfg.expected_dim {
             return Err(CoreError::InvalidConfig(format!(
@@ -95,107 +92,103 @@ impl OnnxEmbedder {
                 cfg.expected_dim
             )));
         }
-        probe.dim = actual_dim;
-        Ok(probe)
+        Ok(Self {
+            session: session_mutex,
+            tokenizer,
+            dim: actual_dim,
+        })
+    }
+}
+
+/// Internal: tokenize, run inference, CLS-pool, L2-normalize.
+///
+/// `hidden_hint` is informational only; the true hidden dim comes from
+/// the output tensor shape. Free function (not a method) so it can be
+/// called during `OnnxEmbedder::load`'s probe step before the struct
+/// is constructed.
+fn embed_with(
+    session: &Mutex<Session>,
+    tokenizer: &Tokenizer,
+    text: &str,
+    _hidden_hint: usize,
+) -> CoreResult<Vec<f32>> {
+    let enc = tokenizer
+        .encode(text, true)
+        .map_err(|e| CoreError::InvalidConfig(format!("tokenizer encode failed: {e}")))?;
+    let ids: Vec<i64> = enc.get_ids().iter().map(|&u| i64::from(u)).collect();
+    let mask: Vec<i64> = enc
+        .get_attention_mask()
+        .iter()
+        .map(|&u| i64::from(u))
+        .collect();
+    let type_ids: Vec<i64> = enc.get_type_ids().iter().map(|&u| i64::from(u)).collect();
+
+    let seq_len = ids.len();
+    let shape = [1_usize, seq_len];
+    let ids_arr = Array2::<i64>::from_shape_vec(shape, ids).map_err(|e| {
+        CoreError::InvalidConfig(format!("input_ids shape construction failed: {e}"))
+    })?;
+    let mask_arr = Array2::<i64>::from_shape_vec(shape, mask).map_err(|e| {
+        CoreError::InvalidConfig(format!("attention_mask shape construction failed: {e}"))
+    })?;
+    let type_arr = Array2::<i64>::from_shape_vec(shape, type_ids).map_err(|e| {
+        CoreError::InvalidConfig(format!("token_type_ids shape construction failed: {e}"))
+    })?;
+
+    let ids_tensor = TensorRef::from_array_view(&ids_arr).map_err(|e| {
+        CoreError::InvalidConfig(format!("input_ids tensor construction failed: {e}"))
+    })?;
+    let mask_tensor = TensorRef::from_array_view(&mask_arr).map_err(|e| {
+        CoreError::InvalidConfig(format!("attention_mask tensor construction failed: {e}"))
+    })?;
+    let type_tensor = TensorRef::from_array_view(&type_arr).map_err(|e| {
+        CoreError::InvalidConfig(format!("token_type_ids tensor construction failed: {e}"))
+    })?;
+
+    let inputs = ort::inputs![
+        "input_ids" => ids_tensor,
+        "attention_mask" => mask_tensor,
+        "token_type_ids" => type_tensor,
+    ];
+
+    let mut session_guard = session
+        .lock()
+        .map_err(|_| CoreError::InvalidConfig("ONNX session mutex poisoned".to_string()))?;
+    let outputs = session_guard
+        .run(inputs)
+        .map_err(|e| CoreError::InvalidConfig(format!("ONNX inference failed: {e}")))?;
+
+    // bge-small-en exports last_hidden_state at output[0].
+    let value: &Value = &outputs[0];
+    let (shape_out, data) = value
+        .try_extract_tensor::<f32>()
+        .map_err(|e| CoreError::InvalidConfig(format!("output tensor extract failed: {e}")))?;
+    let dims: Vec<i64> = shape_out.iter().copied().collect();
+    if dims.len() != 3 {
+        return Err(CoreError::InvalidConfig(format!(
+            "expected 3-D output [batch, seq, hidden], got shape {dims:?}"
+        )));
+    }
+    let batch = usize::try_from(dims[0]).unwrap_or(0);
+    let seq = usize::try_from(dims[1]).unwrap_or(0);
+    let hidden = usize::try_from(dims[2]).unwrap_or(0);
+    if batch != 1 || seq != seq_len || hidden == 0 {
+        return Err(CoreError::InvalidConfig(format!(
+            "unexpected output shape: batch={batch}, seq={seq}, hidden={hidden}, expected_seq={seq_len}"
+        )));
     }
 
-    /// Internal: tokenize, run inference, mean-pool, L2-normalize.
-    /// Works even before `self.dim` is set, since output dim is taken
-    /// from the result tensor shape.
-    fn embed_with(&self, session: &Mutex<Session>, text: &str) -> CoreResult<Vec<f32>> {
-        let enc = self
-            .tokenizer
-            .encode(text, true)
-            .map_err(|e| CoreError::InvalidConfig(format!("tokenizer encode failed: {e}")))?;
-        let ids: Vec<i64> = enc.get_ids().iter().map(|&u| i64::from(u)).collect();
-        let mask: Vec<i64> = enc
-            .get_attention_mask()
-            .iter()
-            .map(|&u| i64::from(u))
-            .collect();
-        let type_ids: Vec<i64> = enc.get_type_ids().iter().map(|&u| i64::from(u)).collect();
-
-        let seq_len = ids.len();
-        let shape = [1_usize, seq_len];
-        let ids_arr = Array2::<i64>::from_shape_vec(shape, ids).map_err(|e| {
-            CoreError::InvalidConfig(format!("input_ids shape construction failed: {e}"))
-        })?;
-        let mask_arr = Array2::<i64>::from_shape_vec(shape, mask.clone()).map_err(|e| {
-            CoreError::InvalidConfig(format!("attention_mask shape construction failed: {e}"))
-        })?;
-        let type_arr = Array2::<i64>::from_shape_vec(shape, type_ids).map_err(|e| {
-            CoreError::InvalidConfig(format!("token_type_ids shape construction failed: {e}"))
-        })?;
-
-        let ids_tensor = TensorRef::from_array_view(&ids_arr).map_err(|e| {
-            CoreError::InvalidConfig(format!("input_ids tensor construction failed: {e}"))
-        })?;
-        let mask_tensor = TensorRef::from_array_view(&mask_arr).map_err(|e| {
-            CoreError::InvalidConfig(format!("attention_mask tensor construction failed: {e}"))
-        })?;
-        let type_tensor = TensorRef::from_array_view(&type_arr).map_err(|e| {
-            CoreError::InvalidConfig(format!("token_type_ids tensor construction failed: {e}"))
-        })?;
-
-        let inputs = ort::inputs![
-            "input_ids" => ids_tensor,
-            "attention_mask" => mask_tensor,
-            "token_type_ids" => type_tensor,
-        ];
-
-        let mut session_guard = session
-            .lock()
-            .map_err(|_| CoreError::InvalidConfig("ONNX session mutex poisoned".to_string()))?;
-        let outputs = session_guard
-            .run(inputs)
-            .map_err(|e| CoreError::InvalidConfig(format!("ONNX inference failed: {e}")))?;
-
-        // bge-small-en exports last_hidden_state at output[0].
-        let value: &Value = &outputs[0];
-        let (shape_out, data) = value
-            .try_extract_tensor::<f32>()
-            .map_err(|e| CoreError::InvalidConfig(format!("output tensor extract failed: {e}")))?;
-        let dims: Vec<i64> = shape_out.iter().copied().collect();
-        if dims.len() != 3 {
-            return Err(CoreError::InvalidConfig(format!(
-                "expected 3-D output [batch, seq, hidden], got shape {dims:?}"
-            )));
+    // bge-small-en-v1.5 uses CLS-pooling: take the embedding at token index 0
+    // from the last hidden state, then L2-normalize.
+    let cls_row = &data[0..hidden];
+    let mut pooled: Vec<f32> = cls_row.to_vec();
+    let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 1e-12 {
+        for v in &mut pooled {
+            *v /= norm;
         }
-        let batch = usize::try_from(dims[0]).unwrap_or(0);
-        let seq = usize::try_from(dims[1]).unwrap_or(0);
-        let hidden = usize::try_from(dims[2]).unwrap_or(0);
-        if batch != 1 || seq != seq_len || hidden == 0 {
-            return Err(CoreError::InvalidConfig(format!(
-                "unexpected output shape: batch={batch}, seq={seq}, hidden={hidden}, expected_seq={seq_len}"
-            )));
-        }
-
-        // Mean-pool with attention mask, then L2-normalize.
-        let mut pooled = vec![0.0_f32; hidden];
-        let mut total_weight = 0.0_f32;
-        for (token_idx, &m) in mask.iter().enumerate() {
-            if m == 0 {
-                continue;
-            }
-            let row_start = token_idx * hidden;
-            for h in 0..hidden {
-                pooled[h] += data[row_start + h];
-            }
-            total_weight += 1.0;
-        }
-        if total_weight > 0.0 {
-            for v in &mut pooled {
-                *v /= total_weight;
-            }
-        }
-        let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 1e-12 {
-            for v in &mut pooled {
-                *v /= norm;
-            }
-        }
-        Ok(pooled)
     }
+    Ok(pooled)
 }
 
 impl EmbeddingBackend for OnnxEmbedder {
@@ -204,8 +197,12 @@ impl EmbeddingBackend for OnnxEmbedder {
     }
 
     fn embed(&self, text: &str) -> CoreResult<Vec<f32>> {
-        self.embed_with(&self.session, text)
+        embed_with(&self.session, &self.tokenizer, text, self.dim)
     }
+
+    // embed_batch falls through to the trait default (serial loop). Real
+    // batched ONNX inference would acquire the Mutex once and shape inputs
+    // as `[batch, seq_len]` — bench in Plan 6 if hot.
 }
 
 /// Resolve the ONNX model file inside `dir`. Accepts a few common names.
