@@ -5,6 +5,7 @@
 //! through pgrx SPI / connection helpers; `_core` stays PG-agnostic and uses
 //! an injected `PgClient`-like trait so it can be unit-tested without a server.
 
+pub mod content_hash;
 pub mod profile;
 pub mod types;
 
