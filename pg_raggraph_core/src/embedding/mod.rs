@@ -117,3 +117,9 @@ pub fn deterministic_embed(text: &str, dim: usize) -> Vec<f32> {
     }
     v
 }
+
+#[cfg(feature = "onnx")]
+pub mod onnx;
+
+#[cfg(feature = "onnx")]
+pub use onnx::{OnnxEmbedder, OnnxEmbedderConfig};

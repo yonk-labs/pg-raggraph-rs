@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Enables the real ONNX embedder (`OnnxEmbedder` for BAAI/bge-small-en-v1.5).
+# Off by default so plain `cargo test` and the pgrx `pg_test` harness keep
+# using the deterministic embedder for byte-stable fixture parity.
+onnx = ["dep:ort", "dep:tokenizers", "dep:ndarray"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -12,6 +19,13 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+
+# Optional: real embedding stack. Gated behind the `onnx` feature.
+# `load-dynamic` lets us link onnxruntime at runtime so the build doesn't
+# need ORT_LIB_LOCATION at compile time.
+ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["load-dynamic", "ndarray", "std", "api-24"] }
+tokenizers = { version = "0.20", optional = true, default-features = false, features = ["onig"] }
+ndarray = { version = "0.17", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"
