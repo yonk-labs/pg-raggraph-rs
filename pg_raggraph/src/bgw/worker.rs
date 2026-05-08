@@ -38,12 +38,20 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
 
     pgrx::log!("{}: started", worker_name);
 
-    // Main loop — 1-second poll cycle. Currently a no-op shell.
-    // Task 9 adds claim_next_job; Task 10 adds run_job dispatch.
+    // Main loop — 1-second poll cycle.
+    // Task 9 wires claim_next_job + complete_job; Task 10 will replace the
+    // immediate-complete short-circuit with a real run_job dispatch.
     while BackgroundWorker::wait_latch(Some(Duration::from_secs(1))) {
         // Drain the SIGHUP flag — PG reloads GUCs automatically; no per-worker action needed yet.
         let _ = BackgroundWorker::sighup_received();
-        // Job claim + dispatch lands in Tasks 9–11.
+
+        let claimed = BackgroundWorker::transaction(crate::bgw::queue::claim_next_job);
+        if let Some(job) = claimed {
+            // Task 10 fills in: dispatch to _core::ingest::run_job.
+            // Plan 9 marks completed immediately so the queue drains and SC-016 holds.
+            let id = job.id;
+            BackgroundWorker::transaction(|| crate::bgw::queue::complete_job(&id));
+        }
     }
 
     pgrx::log!("{}: shutting down", worker_name);

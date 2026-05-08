@@ -5,6 +5,7 @@
 //! Mission brief SC-002: `pg_raggraph.bgw_workers` GUC controls worker count.
 
 pub mod launcher;
+pub(crate) mod queue;
 pub mod worker;
 
 pub use launcher::register_launcher;

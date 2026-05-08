@@ -1068,6 +1068,113 @@ mod tests {
     }
 
     #[pg_test]
+    fn queue_claim_marks_one_job_running() {
+        // SC-016 part 1: claim_next_job() flips a queued row to 'running' atomically
+        // and returns the claimed ClaimedJob. We invoke the helper directly because
+        // pgrx tests run inside a wrapping transaction that is rolled back on exit
+        // — bg-worker backends in their own transactions cannot see uncommitted
+        // rows from the test session, so the cross-backend timing assertion is
+        // deferred to Task 18 (E2E + load-path SC tests). The SQL semantics of the
+        // claim itself are exercised in-process here.
+        Spi::run("SELECT pgrg.namespace_create('q_claim_ns')").unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.ingest_jobs (id, status, source, namespace) \
+             VALUES ('77777777-7777-7777-7777-777777777777', 'queued', 't.md', 'q_claim_ns')",
+        )
+        .unwrap();
+
+        let claimed = crate::bgw::queue::claim_next_job().expect("claim_next_job must return job");
+        let expected = pgrx::Uuid::from_bytes(
+            *uuid::Uuid::parse_str("77777777-7777-7777-7777-777777777777")
+                .unwrap()
+                .as_bytes(),
+        );
+        assert_eq!(
+            claimed.id, expected,
+            "claimed job id must match inserted id"
+        );
+        assert_eq!(claimed.namespace, "q_claim_ns");
+        assert_eq!(
+            claimed.attempt_count, 1,
+            "attempt_count must increment to 1"
+        );
+
+        let s: Option<String> = Spi::get_one(
+            "SELECT status FROM pgrg.ingest_jobs \
+             WHERE id = '77777777-7777-7777-7777-777777777777'",
+        )
+        .unwrap();
+        assert_eq!(
+            s.as_deref(),
+            Some("running"),
+            "status must transition to 'running'"
+        );
+
+        // complete_job must drive the row to 'completed'.
+        crate::bgw::queue::complete_job(&claimed.id);
+        let s2: Option<String> = Spi::get_one(
+            "SELECT status FROM pgrg.ingest_jobs \
+             WHERE id = '77777777-7777-7777-7777-777777777777'",
+        )
+        .unwrap();
+        assert_eq!(s2.as_deref(), Some("completed"));
+    }
+
+    #[pg_test]
+    fn queue_skip_locked_no_double_processing() {
+        // SC-016 part 2: FOR UPDATE SKIP LOCKED LIMIT 1 returns one distinct
+        // queued job per call and never re-claims a job already moved out of
+        // 'queued'. We drive 10 sequential claim_next_job() calls (the bg
+        // worker would do the same per loop iteration) and assert (a) all 10
+        // are claimed exactly once, (b) attempt_count caps at 1, (c) the 11th
+        // call returns None. Multi-worker concurrency is verified separately
+        // at Task 18 once jobs are committed via real ingest queueing.
+        Spi::run("SELECT pgrg.namespace_create('skip_locked_ns')").unwrap();
+        for i in 0..10 {
+            let id = format!("99999999-9999-9999-9999-{i:012}");
+            Spi::run(&format!(
+                "INSERT INTO pgrg.ingest_jobs (id, status, source, namespace) \
+                 VALUES ('{id}', 'queued', 's{i}.md', 'skip_locked_ns')"
+            ))
+            .unwrap();
+        }
+
+        let mut claimed_ids: std::collections::HashSet<pgrx::Uuid> =
+            std::collections::HashSet::new();
+        for _ in 0..10 {
+            let job = crate::bgw::queue::claim_next_job()
+                .expect("claim_next_job must return a job while queue is non-empty");
+            assert!(
+                claimed_ids.insert(job.id),
+                "FOR UPDATE SKIP LOCKED must not return the same id twice (got {:?} twice)",
+                job.id
+            );
+            crate::bgw::queue::complete_job(&job.id);
+        }
+        assert_eq!(
+            claimed_ids.len(),
+            10,
+            "all 10 jobs must be claimed exactly once"
+        );
+
+        // 11th call must return None (queue drained).
+        assert!(
+            crate::bgw::queue::claim_next_job().is_none(),
+            "drained queue must yield None"
+        );
+
+        let max_attempts: Option<i32> = Spi::get_one(
+            "SELECT max(attempt_count) FROM pgrg.ingest_jobs \
+             WHERE namespace = 'skip_locked_ns'",
+        )
+        .unwrap();
+        assert!(
+            max_attempts.unwrap_or(0) <= 1,
+            "FOR UPDATE SKIP LOCKED must prevent double-claim, max attempts = {max_attempts:?}"
+        );
+    }
+
+    #[pg_test]
     fn e2e_ingest_extracted_then_query() {
         load_minimal_fixture_for_query("e2e_demo");
 
