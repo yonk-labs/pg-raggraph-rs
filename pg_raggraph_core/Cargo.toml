@@ -20,6 +20,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 
+# Chunker: `chunkshop` is a sibling Yonk Labs library that ships chunking
+# strategies (auto/hierarchy/semantic/sentence_aware/fixed_overlap/neighbor_expand).
+# We use it as our only chunker — the project constitution forbids hand-rolling one.
+chunkshop = { package = "chunkshop-rs", version = "0.3", default-features = false }
+
 # Optional: real embedding stack. Gated behind the `onnx` feature.
 # `load-dynamic` lets us link onnxruntime at runtime so the build doesn't
 # need ORT_LIB_LOCATION at compile time.
