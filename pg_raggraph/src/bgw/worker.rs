@@ -31,7 +31,7 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
     // Extract worker index from argument.
     let worker_idx: i32 =
         unsafe { i32::from_polymorphic_datum(arg, false, pgrx::pg_sys::INT4OID) }.unwrap_or(0);
-    let worker_name = format!("pg_raggraph_w{}", worker_idx);
+    let worker_name = format!("pg_raggraph w{worker_idx}");
 
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
     BackgroundWorker::connect_worker_to_spi(Some("postgres"), None);
@@ -41,9 +41,8 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
     // Main loop — 1-second poll cycle. Currently a no-op shell.
     // Task 9 adds claim_next_job; Task 10 adds run_job dispatch.
     while BackgroundWorker::wait_latch(Some(Duration::from_secs(1))) {
-        if BackgroundWorker::sighup_received() {
-            // GUCs reloaded automatically.
-        }
+        // Drain the SIGHUP flag — PG reloads GUCs automatically; no per-worker action needed yet.
+        let _ = BackgroundWorker::sighup_received();
         // Job claim + dispatch lands in Tasks 9–11.
     }
 

@@ -30,9 +30,8 @@ pub extern "C-unwind" fn pg_raggraph_launcher_main(_arg: pgrx::pg_sys::Datum) {
     // Main loop — 30-second latch cycle. Currently a no-op shell.
     // Task 16 will add the stuck-job reaper here.
     while BackgroundWorker::wait_latch(Some(Duration::from_secs(30))) {
-        if BackgroundWorker::sighup_received() {
-            // GUCs reloaded automatically by PG on SIGHUP.
-        }
+        // Drain the SIGHUP flag — PG reloads GUCs automatically; no per-worker action needed yet.
+        let _ = BackgroundWorker::sighup_received();
         // Reaper sweep lands in Task 16.
     }
 

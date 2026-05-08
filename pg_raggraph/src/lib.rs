@@ -832,16 +832,21 @@ mod tests {
     #[pg_test]
     fn bgw_workers_registered_under_preload() {
         // SC-002: with shared_preload_libraries='pg_raggraph' and
-        // pg_raggraph.bgw_workers=2, exactly 2 worker processes run
-        // (named "pg_raggraph w0", "pg_raggraph w1"; the launcher carries
-        // its own backend_type "pg_raggraph launcher" and is excluded).
-        // BGWs surface their bgw_type via pg_stat_activity.backend_type
-        // (set by BackgroundWorkerBuilder::new -> defaults bgw_type=name).
-        let n: Option<i64> = Spi::get_one(
-            "SELECT count(*) FROM pg_stat_activity \
-             WHERE backend_type LIKE 'pg_raggraph w%'",
-        )
-        .unwrap();
+        // pg_raggraph.bgw_workers=2, exactly 2 worker processes run.
+        // Workers may not have populated pg_stat_activity yet — poll until
+        // they're visible (up to 5 seconds).
+        let mut n = Some(0i64);
+        for _ in 0..50 {
+            n = Spi::get_one(
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE backend_type LIKE 'pg_raggraph w%'",
+            )
+            .unwrap();
+            if n == Some(2) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         assert_eq!(n, Some(2), "expected 2 pg_raggraph bg workers, got {n:?}");
     }
 
