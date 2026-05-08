@@ -7,6 +7,7 @@ pub mod chunking;
 pub mod embedding;
 pub mod error;
 pub mod ingest;
+pub mod llm;
 pub mod retrieval;
 pub mod types;
 
