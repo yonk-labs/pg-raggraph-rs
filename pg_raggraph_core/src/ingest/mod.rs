@@ -6,8 +6,11 @@
 //! an injected `PgClient`-like trait so it can be unit-tested without a server.
 
 pub mod content_hash;
+pub mod pg_client;
 pub mod profile;
+pub mod run;
 pub mod types;
 
 pub use profile::IngestProfile;
+pub use run::{RunJobOutcome, run_job};
 pub use types::{IngestJob, IngestRequest, IngestSource};
