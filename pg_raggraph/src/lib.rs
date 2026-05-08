@@ -7,6 +7,7 @@ use pgrx::prelude::*;
 ::pgrx::pg_module_magic!(name, version);
 
 mod admin;
+mod bgw;
 mod embedding;
 mod gucs;
 mod ingest_extracted;
@@ -14,10 +15,20 @@ mod retrieval;
 
 /// Called by PostgreSQL when the extension shared library is loaded.
 /// Registers GUCs so they are available before CREATE EXTENSION runs.
+/// When loaded via `shared_preload_libraries`, also registers background workers.
 #[allow(non_snake_case)]
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     gucs::register();
+
+    // SC-001: only register BGWs when loading via shared_preload_libraries.
+    // During CREATE EXTENSION, this flag is false and we skip registration.
+    unsafe {
+        if pgrx::pg_sys::process_shared_preload_libraries_in_progress {
+            bgw::register_launcher();
+            bgw::register_workers();
+        }
+    }
 }
 
 ::pgrx::extension_sql_file!(
@@ -816,6 +827,22 @@ mod tests {
             texts.contains(&"chunk-a".to_string()),
             "undirected walk: A must be reachable from B (relationship A->B); got {texts:?}"
         );
+    }
+
+    #[pg_test]
+    fn bgw_workers_registered_under_preload() {
+        // SC-002: with shared_preload_libraries='pg_raggraph' and
+        // pg_raggraph.bgw_workers=2, exactly 2 worker processes run
+        // (named "pg_raggraph w0", "pg_raggraph w1"; the launcher carries
+        // its own backend_type "pg_raggraph launcher" and is excluded).
+        // BGWs surface their bgw_type via pg_stat_activity.backend_type
+        // (set by BackgroundWorkerBuilder::new -> defaults bgw_type=name).
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE backend_type LIKE 'pg_raggraph w%'",
+        )
+        .unwrap();
+        assert_eq!(n, Some(2), "expected 2 pg_raggraph bg workers, got {n:?}");
     }
 
     #[pg_test]
