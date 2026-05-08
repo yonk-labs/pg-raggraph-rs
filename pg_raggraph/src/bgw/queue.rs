@@ -42,6 +42,13 @@ pub(crate) fn claim_next_job() -> Option<ClaimedJob> {
             .ok()
             .and_then(|t| t.first().get::<bool>(1).ok().flatten());
         if installed != Some(true) {
+            // installed == Some(false): extension not installed in this DB — graceful idle, no log spam.
+            // installed == None: SPI error path — log once so we don't silently starve workers.
+            if installed.is_none() {
+                pgrx::log!(
+                    "pg_raggraph: claim_next_job: to_regclass check failed unexpectedly; idling this cycle"
+                );
+            }
             return None;
         }
 
