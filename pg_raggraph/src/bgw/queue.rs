@@ -107,9 +107,6 @@ pub(crate) fn complete_job(job_id: &pgrx::Uuid) {
 }
 
 /// Mark a job failed with an error message.
-/// Used by Task 10's run_job error path; kept here so the queue module exposes
-/// the full lifecycle in one place.
-#[allow(dead_code)]
 pub(crate) fn fail_job(job_id: &pgrx::Uuid, error: &str) {
     Spi::connect_mut(|client| {
         client
