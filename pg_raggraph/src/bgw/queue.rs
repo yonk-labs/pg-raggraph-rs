@@ -10,15 +10,12 @@ use pgrx::prelude::*;
 #[derive(Debug)]
 pub(crate) struct ClaimedJob {
     pub id: pgrx::Uuid,
-    #[allow(dead_code)] // Consumed by Task 10's run_job pipeline.
     pub source: Option<String>,
-    #[allow(dead_code)] // Consumed by Task 10's run_job pipeline.
     pub namespace: String,
-    #[allow(dead_code)] // Consumed by Task 10's run_job pipeline.
     pub chunk_strategy: Option<String>,
-    #[allow(dead_code)] // Consumed by Task 10's run_job pipeline.
     pub payload: Option<Vec<u8>>,
-    #[allow(dead_code)] // Consumed by Task 10's run_job pipeline.
+    /// Reserved for Task 16's reaper sweep, which will cap retries at 3.
+    #[allow(dead_code)]
     pub attempt_count: i32,
 }
 

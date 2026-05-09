@@ -1175,6 +1175,60 @@ mod tests {
     }
 
     #[pg_test]
+    fn spi_pg_client_drives_run_job_to_chunks_with_embeddings() {
+        // SC-004 / SC-009 in-task verification: SpiPgClient + DeterministicEmbedder
+        // (pg_test build) + MockProvider produces a document + chunks with embeddings.
+        // The cross-backend bg-worker dispatch path is verified in Task 18.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('spi_drain_ns')").unwrap();
+
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "doc.md".into(),
+                content: "the quick brown fox jumps over the lazy dog".into(),
+            },
+            namespace: "spi_drain_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        let dim_i32 = crate::gucs::EMBED_DIM.get();
+        let dim: usize = usize::try_from(dim_i32).expect("embed_dim non-negative");
+        let embedder = DeterministicEmbedder::new(dim);
+        let provider = MockProvider::new();
+
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+        let outcome = run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+        assert!(matches!(
+            outcome,
+            pg_raggraph_core::ingest::run::RunJobOutcome::Completed { .. }
+        ));
+
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'spi_drain_ns'")
+                .unwrap();
+        assert_eq!(docs, Some(1), "exactly 1 document row");
+
+        let chunks: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.chunks WHERE namespace = 'spi_drain_ns'")
+                .unwrap();
+        assert!(
+            chunks.unwrap_or(0) >= 1,
+            "at least 1 chunk row, got {chunks:?}"
+        );
+
+        // SC-004: chunks must have non-NULL embeddings.
+        let null_emb: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.chunks \
+             WHERE namespace = 'spi_drain_ns' AND embedding IS NULL",
+        )
+        .unwrap();
+        assert_eq!(null_emb, Some(0), "all chunks must carry an embedding");
+    }
+
+    #[pg_test]
     fn e2e_ingest_extracted_then_query() {
         load_minimal_fixture_for_query("e2e_demo");
 
