@@ -1373,6 +1373,48 @@ mod tests {
     }
 
     #[pg_test]
+    fn duplicate_ingest_via_run_job_yields_skipped_no_op() {
+        // SC-007: identical content_hash -> SkippedDuplicate, no second doc row.
+        // Verified end-to-end via SpiPgClient (real schema). Cross-backend
+        // worker dispatch covered in Task 18.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::{RunJobOutcome, run_job};
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('dup_ns')").unwrap();
+
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "d".into(),
+                content: "identical content body".into(),
+            },
+            namespace: "dup_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        let first = run_job(&mut client, &req, &embedder, &provider).expect("first run_job ok");
+        assert!(matches!(first, RunJobOutcome::Completed { .. }));
+
+        let second = run_job(&mut client, &req, &embedder, &provider).expect("second run_job ok");
+        assert!(
+            matches!(second, RunJobOutcome::SkippedDuplicate { .. }),
+            "second ingest of identical content must be SkippedDuplicate"
+        );
+
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'dup_ns'").unwrap();
+        assert_eq!(
+            docs,
+            Some(1),
+            "duplicate content_hash must not create second doc"
+        );
+    }
+
+    #[pg_test]
     fn e2e_ingest_extracted_then_query() {
         load_minimal_fixture_for_query("e2e_demo");
 
