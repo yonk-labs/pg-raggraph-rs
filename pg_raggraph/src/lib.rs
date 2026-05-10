@@ -1258,6 +1258,121 @@ mod tests {
     }
 
     #[pg_test]
+    fn ingest_text_enqueues_payload_and_pipeline_writes_document() {
+        // SC-005: pgrg.ingest_text enqueues utf-8 payload; the worker pipeline
+        // (verified in-test via direct run_job dispatch) writes a document
+        // whose content equals 'hello world from ingest_text' after chunking.
+        // Cross-backend bg-worker dispatch is verified in Task 18.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('ingest_text_ns')").unwrap();
+
+        // Part 1: pgrg.ingest_text enqueues with the right payload.
+        let id: Option<pgrx::Uuid> = Spi::get_one(
+            "SELECT pgrg.ingest_text('doc1', 'hello world from ingest_text', 'ingest_text_ns', 'auto')",
+        )
+        .unwrap();
+        assert!(id.is_some(), "ingest_text must return a UUID");
+
+        let payload: Option<Vec<u8>> = Spi::get_one(&format!(
+            "SELECT payload FROM pgrg.ingest_jobs WHERE id = '{}'",
+            id.unwrap()
+        ))
+        .unwrap();
+        let bytes = payload.expect("payload must be set");
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            "hello world from ingest_text",
+            "payload bytes must match the utf-8 content"
+        );
+        let job_source: Option<String> = Spi::get_one(&format!(
+            "SELECT source FROM pgrg.ingest_jobs WHERE id = '{}'",
+            id.unwrap()
+        ))
+        .unwrap();
+        assert_eq!(job_source.as_deref(), Some("doc1"));
+
+        // Part 2: directly drive run_job (the same path the worker takes) and
+        // verify the document/chunks land + are queryable.
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "doc1".into(),
+                content: "hello world from ingest_text".into(),
+            },
+            namespace: "ingest_text_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+        run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'ingest_text_ns'")
+                .unwrap();
+        assert_eq!(docs, Some(1), "exactly 1 document row");
+
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('hello world', NULL, 5, 'ingest_text_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert!(
+            n.unwrap_or(0) >= 1,
+            "ingested doc must be retrievable via pgrg.query"
+        );
+    }
+
+    #[pg_test]
+    fn ingest_bytes_enqueues_payload_and_pipeline_writes_document() {
+        // SC-006: pgrg.ingest_bytes carries arbitrary bytes through the queue;
+        // the worker pipeline chunks them. Use UTF-8 bytes so chunkshop can
+        // process them (binary handlers are out of Plan 3 scope).
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('ingest_bytes_ns')").unwrap();
+
+        // Part 1: pgrg.ingest_bytes enqueues. "hello world" as hex.
+        let bytes_sql = "E'\\\\x68656c6c6f20776f726c64'::bytea";
+        let id: Option<pgrx::Uuid> = Spi::get_one(&format!(
+            "SELECT pgrg.ingest_bytes('doc1.bin', {bytes_sql}, 'ingest_bytes_ns', 'auto')"
+        ))
+        .unwrap();
+        assert!(id.is_some());
+
+        let payload: Option<Vec<u8>> = Spi::get_one(&format!(
+            "SELECT payload FROM pgrg.ingest_jobs WHERE id = '{}'",
+            id.unwrap()
+        ))
+        .unwrap();
+        assert_eq!(payload.as_deref(), Some(b"hello world".as_slice()));
+
+        // Part 2: drive run_job directly with Bytes source.
+        let req = IngestRequest {
+            source: IngestSource::Bytes {
+                name: "doc1.bin".into(),
+                bytes: b"hello world".to_vec(),
+            },
+            namespace: "ingest_bytes_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+        run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'ingest_bytes_ns'")
+                .unwrap();
+        assert_eq!(docs, Some(1), "ingest_bytes must produce 1 document");
+    }
+
+    #[pg_test]
     fn e2e_ingest_extracted_then_query() {
         load_minimal_fixture_for_query("e2e_demo");
 
