@@ -10,6 +10,7 @@ mod admin;
 mod bgw;
 mod embedding;
 mod gucs;
+mod ingest;
 mod ingest_extracted;
 mod retrieval;
 
@@ -1226,6 +1227,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(null_emb, Some(0), "all chunks must carry an embedding");
+    }
+
+    #[pg_test]
+    fn ingest_returns_uuid_under_50ms_and_enqueues_job() {
+        // SC-003: pgrg.ingest is non-blocking; returns UUID quickly; row visible.
+        Spi::run("SELECT pgrg.namespace_create('ingest_speed_ns')").unwrap();
+        let path = "/tmp/pgrg_ingest_speed.md";
+        std::fs::write(path, "# Title\n\nbody").unwrap();
+
+        let start = std::time::Instant::now();
+        let id: Option<pgrx::Uuid> = Spi::get_one(&format!(
+            "SELECT pgrg.ingest('{path}', 'ingest_speed_ns', 'auto')"
+        ))
+        .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(id.is_some(), "must return a UUID");
+        assert!(
+            elapsed.as_millis() < 50,
+            "SC-003: pgrg.ingest must return in <50ms, took {elapsed:?}"
+        );
+
+        let n: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.ingest_jobs \
+             WHERE namespace = 'ingest_speed_ns'",
+        )
+        .unwrap();
+        assert_eq!(n, Some(1), "exactly one job row enqueued");
     }
 
     #[pg_test]
