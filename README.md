@@ -12,14 +12,32 @@ This is the Rust extension implementation of [pg-raggraph](https://github.com/yo
 
 ## Status
 
-**Pre-alpha (0.1.0-alpha.2).** Foundation + **retrieval engine** in place: schema, namespaces, providers, GUCs, health/status, **plus** synchronous hybrid retrieval (`pgrg.query`), deterministic test embeddings (`pgrg.embed`), and a fixture loader for testing and parity benchmarks (`pgrg.ingest_extracted`). Async ingest (Plan 3), LLM grounding (Plan 4), sidecar (Plan 5), and the parity harness (Plan 6) land in subsequent plans.
+**Pre-alpha (0.1.0-alpha.3).** Foundation + retrieval engine + **async ingest pipeline** in place: schema, namespaces, providers, GUCs, health/status, hybrid retrieval (`pgrg.query`), deterministic test embeddings (`pgrg.embed`), fixture loader (`pgrg.ingest_extracted`), **plus** background worker pool, queue-backed async ingest (`pgrg.ingest`, `pgrg.ingest_text`, `pgrg.ingest_bytes`), chunkshop integration as the canonical chunker, ONNX-backed embedding model (`BAAI/bge-small-en-v1.5` fp32) loaded once per worker, content-hash incremental skip, ingestion profile knobs (`conservative`/`balanced`/`aggressive`/`max`), and reaper sweep. LLM grounding (Plan 4), sidecar (Plan 5), and the parity harness (Plan 6) land in subsequent plans.
 
 ```sql
--- This works as of 0.1.0-alpha.2:
-CREATE EXTENSION pg_raggraph CASCADE;
-SELECT pgrg.namespace_create('demo');
-SELECT pgrg.ingest_extracted('/path/to/test-corpus.jsonl', 'demo');
-SELECT text, score FROM pgrg.query('your query here', NULL, 5, 'demo');
+-- This works as of 0.1.0-alpha.3:
+CREATE EXTENSION pg_raggraph CASCADE;                              -- schema + indexes + bg workers
+SELECT pgrg.namespace_create('demo');                              -- per-tenant container
+SELECT pgrg.ingest_text('hello.md', 'hello world', 'demo');        -- non-blocking; returns job UUID
+-- ... worker drains in background ...
+SELECT text, score FROM pgrg.query('hello', NULL, 5, 'demo');      -- hybrid retrieval
+```
+
+### Manual verification (DC-006)
+
+To confirm worker-count independence:
+
+```bash
+# In postgresql.conf:
+#   shared_preload_libraries = 'pg_raggraph'
+#   pg_raggraph.bgw_workers = 1
+cargo pgrx run pg18  # or pg17 in CI
+# Ingest 5 docs, verify count:
+psql -c "SELECT pgrg.namespace_create('w1');"
+# ... 5 ingest_text calls ...
+psql -c "SELECT count(*) FROM pgrg.documents WHERE namespace = 'w1';"  # expect 5
+
+# Repeat with pg_raggraph.bgw_workers = 2; expect identical 5.
 ```
 
 ## Requirements

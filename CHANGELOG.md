@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.0-alpha.3] — 2026-05-11
+
+### Added
+- `pgrg.ingest(path, namespace, chunk_strategy)` — async path-shaped ingest; returns job UUID immediately (Plan 3, SC-003)
+- `pgrg.ingest_text(name, content, namespace, chunk_strategy)` — async inline-text ingest (Plan 3, SC-005)
+- `pgrg.ingest_bytes(name, bytes, namespace, chunk_strategy)` — async inline-bytes ingest (Plan 3, SC-006)
+- `pgrg.set_ingest_profile(namespace, profile)` — per-namespace concurrency knob (`conservative`=2, `balanced`=4, `aggressive`=8, `max`=16) (Plan 3, SC-014)
+- Background worker pool — `pgrg.bgw_workers` GUC (default 2); registered in `_PG_init` only when `process_shared_preload_libraries_in_progress` (Plan 3, SC-001/SC-002)
+- Reaper sweep — `pgrg.job_reaper_interval` GUC (default 300s) re-queues stuck `running` jobs; max 3 attempts before permanent fail (Plan 3, SC-012)
+- chunkshop integration — `auto` (= `sentence_aware`), `hierarchy`, `sentence_aware`, `fixed_overlap`, `neighbor_expand` strategies; `semantic` is exposed but defers to Plan 4 (requires fastembed boundary-model load) (Plan 3, SC-008)
+- ONNX-backed embedding model — `BAAI/bge-small-en-v1.5` fp32 via `ort = "2"`, gated on `pg_raggraph_core/onnx` feature; CLS-pooled + L2-normalized; dim mismatch is a load-time error (Plan 3, SC-004/SC-009/SC-010 unit; integration in Plan 4)
+- `LlmProvider` trait surface in `pg_raggraph_core::llm` with `MockProvider` no-op impl; concrete impls land in Plan 4 (Plan 3, SC-015)
+- Content-hash incremental skip — re-ingesting identical content is a no-op; document row count stays at 1 (Plan 3, SC-007)
+- Per-document transaction atomicity — chunk-write failure rolls back the whole document (Plan 3, SC-011)
+- Schema-invariant tests for `ingest_jobs.payload`/`attempt_count`/`ingest_jobs_active_idx` (columns/index already shipped in Plan 1's `001_tables.sql`/`002_indexes.sql`; Plan 3 locks them via tests)
+
+### Carry-forward to later plans
+- Real OpenAI / Anthropic / Ollama LLM provider impls (Plan 4)
+- AES-GCM credential encryption (Plan 4)
+- `pgrg.ask` LLM grounding (Plan 4)
+- ONNX embedder wired into bg worker production builds via a `pg_raggraph/onnx` feature (Plan 4)
+- chunkshop `semantic` strategy with fastembed boundary-model (Plan 4)
+- Cross-backend bg-worker dispatch tests (deferred from Plan 3 due to pgrx test transaction model; manual `cargo pgrx run` verification documented in README)
+- Sidecar binary (Plan 5)
+- Cross-impl parity harness (Plan 6)
+
 ## [0.1.0-alpha.2] — 2026-05-04
 
 ### Added

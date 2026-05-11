@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pg_raggraph_core",
  "pgrx",
@@ -2780,7 +2780,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph_core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "chunkshop-rs",
  "ndarray",
@@ -2796,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph_sidecar"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "pg_raggraph_core",
  "tracing",
