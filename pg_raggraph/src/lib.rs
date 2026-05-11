@@ -1477,6 +1477,65 @@ mod tests {
         });
         assert!(res.is_err(), "unknown profile must error");
     }
+
+    #[pg_test]
+    fn reaper_requeues_stuck_running_job_under_attempt_cap() {
+        // SC-012: simulate stuck job; reaper requeues it.
+        Spi::run("SELECT pgrg.namespace_create('reaper_ns')").unwrap();
+        // Default pgrg.job_reaper_interval is 300s; updated_at set 10 min ago.
+        Spi::run(
+            "INSERT INTO pgrg.ingest_jobs \
+             (id, status, source, namespace, attempt_count, updated_at, started_at, enqueued_at) \
+             VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb01', 'running', 's.md', 'reaper_ns', \
+                     1, now() - interval '10 minutes', now() - interval '10 minutes', now() - interval '10 minutes')",
+        )
+        .unwrap();
+
+        Spi::run("SELECT pgrg._reaper_sweep()").unwrap();
+
+        let s: Option<String> = Spi::get_one(
+            "SELECT status FROM pgrg.ingest_jobs \
+             WHERE id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb01'",
+        )
+        .unwrap();
+        assert_eq!(
+            s.as_deref(),
+            Some("queued"),
+            "reaper must re-queue stuck job"
+        );
+    }
+
+    #[pg_test]
+    fn reaper_fails_job_at_attempt_cap() {
+        // SC-012: max 3 attempts, then 'failed' with reaper message.
+        Spi::run("SELECT pgrg.namespace_create('reaper_cap_ns')").unwrap();
+        Spi::run(
+            "INSERT INTO pgrg.ingest_jobs \
+             (id, status, source, namespace, attempt_count, updated_at, started_at, enqueued_at) \
+             VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb02', 'running', 's.md', 'reaper_cap_ns', \
+                     3, now() - interval '10 minutes', now() - interval '10 minutes', now() - interval '10 minutes')",
+        )
+        .unwrap();
+
+        Spi::run("SELECT pgrg._reaper_sweep()").unwrap();
+
+        let status: Option<String> = Spi::get_one(
+            "SELECT status FROM pgrg.ingest_jobs \
+             WHERE id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb02'",
+        )
+        .unwrap();
+        assert_eq!(status.as_deref(), Some("failed"));
+
+        let error: Option<String> = Spi::get_one(
+            "SELECT error FROM pgrg.ingest_jobs \
+             WHERE id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbb02'",
+        )
+        .unwrap();
+        assert!(
+            error.unwrap_or_default().contains("reaper"),
+            "error message must mention 'reaper'"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@
 pub(crate) mod embedder_cache;
 pub mod launcher;
 pub(crate) mod queue;
+pub(crate) mod reaper;
 pub(crate) mod spi_client;
 pub mod worker;
 
