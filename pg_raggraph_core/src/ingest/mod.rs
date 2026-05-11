@@ -8,9 +8,11 @@
 pub mod content_hash;
 pub mod pg_client;
 pub mod profile;
+pub mod profile_resolve;
 pub mod run;
 pub mod types;
 
 pub use profile::IngestProfile;
+pub use profile_resolve::resolve_concurrency;
 pub use run::{RunJobOutcome, run_job};
 pub use types::{IngestJob, IngestRequest, IngestSource};

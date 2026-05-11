@@ -1,4 +1,5 @@
 use pg_raggraph_core::ingest::IngestProfile;
+use pg_raggraph_core::ingest::profile_resolve::resolve_concurrency;
 
 #[test]
 fn profile_default_is_balanced() {
@@ -49,4 +50,18 @@ fn profile_as_str_roundtrip() {
     ] {
         assert_eq!(IngestProfile::parse(p.as_str()), Some(p));
     }
+}
+
+#[test]
+fn resolve_concurrency_falls_back_to_guc_when_profile_absent() {
+    let n = resolve_concurrency(None, 4);
+    assert_eq!(n, 4);
+}
+
+#[test]
+fn resolve_concurrency_uses_profile_when_present() {
+    assert_eq!(resolve_concurrency(Some(IngestProfile::Conservative), 4), 2);
+    assert_eq!(resolve_concurrency(Some(IngestProfile::Balanced), 4), 4);
+    assert_eq!(resolve_concurrency(Some(IngestProfile::Aggressive), 4), 8);
+    assert_eq!(resolve_concurrency(Some(IngestProfile::Max), 4), 16);
 }

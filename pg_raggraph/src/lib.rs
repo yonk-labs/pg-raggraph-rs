@@ -12,6 +12,7 @@ mod embedding;
 mod gucs;
 mod ingest;
 mod ingest_extracted;
+mod ingest_profile;
 mod retrieval;
 
 /// Called by PostgreSQL when the extension shared library is loaded.
@@ -1452,6 +1453,29 @@ mod tests {
                 "score must be positive, got {score} for `{text}`"
             );
         }
+    }
+
+    #[pg_test]
+    fn set_ingest_profile_persists_in_namespace_settings() {
+        Spi::run("SELECT pgrg.namespace_create('profile_ns')").unwrap();
+        Spi::run("SELECT pgrg.set_ingest_profile('profile_ns', 'aggressive')").unwrap();
+
+        let setting: Option<pgrx::JsonB> =
+            Spi::get_one("SELECT settings FROM pgrg.namespaces WHERE name = 'profile_ns'").unwrap();
+        let obj = setting.expect("settings present").0;
+        assert_eq!(
+            obj["ingest_profile"], "aggressive",
+            "profile must persist in namespace settings"
+        );
+    }
+
+    #[pg_test]
+    fn set_ingest_profile_rejects_unknown_value() {
+        Spi::run("SELECT pgrg.namespace_create('profile_bad_ns')").unwrap();
+        let res = std::panic::catch_unwind(|| {
+            Spi::run("SELECT pgrg.set_ingest_profile('profile_bad_ns', 'turbo')").unwrap();
+        });
+        assert!(res.is_err(), "unknown profile must error");
     }
 }
 
