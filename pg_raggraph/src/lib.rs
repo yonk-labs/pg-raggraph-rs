@@ -1536,6 +1536,43 @@ mod tests {
             "error message must mention 'reaper'"
         );
     }
+
+    #[pg_test]
+    fn ingest_jobs_status_check_violation_has_sqlstate_23514() {
+        // SC-013: explicit SQLSTATE 23514 (check_violation) assertion.
+        // The constraint shipped in 005_status_check_atomicity.sql (Plan 2);
+        // this test asserts the SQLSTATE Postgres raises for the violation
+        // is exactly 23514 (check_violation).
+        //
+        // We use a PL/pgSQL DO block with EXCEPTION WHEN check_violation so
+        // the SQLSTATE is captured server-side (pgrx strips ERROR payloads
+        // before they reach Rust panic context). The block writes the
+        // observed SQLSTATE to a temp table we can SELECT from.
+        Spi::run("SELECT pgrg.namespace_create('sqlstate_ns')").unwrap();
+        Spi::run("CREATE TEMP TABLE _sqlstate_probe (state text)").unwrap();
+        Spi::run(
+            "DO $$
+            BEGIN
+                BEGIN
+                    INSERT INTO pgrg.ingest_jobs
+                        (id, status, source, namespace)
+                    VALUES
+                        ('cccccccc-cccc-cccc-cccc-cccccccccc01',
+                         'bogus', 't.md', 'sqlstate_ns');
+                EXCEPTION WHEN check_violation THEN
+                    INSERT INTO _sqlstate_probe(state) VALUES (SQLSTATE);
+                END;
+            END $$;",
+        )
+        .unwrap();
+
+        let sqlstate: Option<String> = Spi::get_one("SELECT state FROM _sqlstate_probe").unwrap();
+        assert_eq!(
+            sqlstate.as_deref(),
+            Some("23514"),
+            "expected SQLSTATE 23514 (check_violation) on ingest_jobs.status CHECK"
+        );
+    }
 }
 
 #[cfg(test)]
