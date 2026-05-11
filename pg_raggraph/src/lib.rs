@@ -1573,6 +1573,180 @@ mod tests {
             "expected SQLSTATE 23514 (check_violation) on ingest_jobs.status CHECK"
         );
     }
+
+    #[pg_test]
+    fn e2e_ingest_then_query_via_run_job() {
+        // Mission brief E2E (mod): 5 documents ingested via direct run_job
+        // dispatch through SpiPgClient, pgrg.query returns ranked results.
+        // The cross-backend bg-worker dispatch is verified in Task 18's DC-006
+        // manual-run section (README).
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('e2e_bgw_ns')").unwrap();
+        let docs: Vec<&str> = vec![
+            "the auth module verifies user credentials",
+            "billing service charges customers monthly",
+            "search service ranks documents by relevance",
+            "notification service emails alerts to users",
+            "auth module also handles password resets",
+        ];
+
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        for (i, body) in docs.iter().enumerate() {
+            let req = IngestRequest {
+                source: IngestSource::Text {
+                    name: format!("doc{i}"),
+                    content: (*body).to_string(),
+                },
+                namespace: "e2e_bgw_ns".into(),
+                chunk_strategy: "auto".into(),
+            };
+            run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+        }
+
+        let n_docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace = 'e2e_bgw_ns'")
+                .unwrap();
+        assert_eq!(n_docs, Some(5), "5 documents must be ingested");
+
+        let results: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('auth module', NULL, 5, 'e2e_bgw_ns', 1, NULL, 'hybrid')",
+        )
+        .unwrap();
+        assert!(
+            results.unwrap_or(0) >= 1,
+            "pgrg.query must return at least one ranked result for ingested corpus"
+        );
+    }
+
+    #[pg_test]
+    fn chunk_strategy_hierarchy_and_sentence_aware_differ_on_markdown() {
+        // SC-008 (modified): chunkshop's `Semantic` strategy requires a fastembed
+        // boundary-model load (deferred to Plan 4) — see Task 6 commit. Pivoted
+        // to `hierarchy` vs `sentence_aware`, both available now. Same SC-008
+        // contract: different strategies produce different chunk counts.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('strategy_ns')").unwrap();
+        // Hierarchy applies `min_section_chars=100` and drops short sections
+        // entirely; sentence_aware's `split_prose` keeps every section. We mix
+        // two "long" sections (>= 100 char bodies) with two "short" sections
+        // (< 100 char bodies) so the counts diverge: hierarchy -> 2,
+        // sentence_aware -> 4.
+        // Each source uses a slightly different body so the per-document
+        // `content_hash` differs (the ON CONFLICT (content_hash) clause would
+        // otherwise turn the second insert into SkippedDuplicate).
+        let body_h = "# Auth Module H\n\n\
+            The authentication module verifies user credentials against the central identity store. \
+            It supports password, OAuth, and SAML flows, and integrates with the audit log for every login event. \
+            Each verification path emits structured telemetry for downstream analytics.\n\n\
+            # Short A\n\nshort body a.\n\n\
+            # Billing Service H\n\n\
+            The billing service runs nightly to charge customers on their monthly cycle. \
+            It batches invoices, handles failed payments with retry, and notifies the dunning workflow. \
+            Reconciliation reports are emitted to the finance pipeline every morning.\n\n\
+            # Short B\n\nshort body b.";
+        let body_s = "# Auth Module S\n\n\
+            The authentication module verifies user credentials against the central identity store. \
+            It supports password, OAuth, and SAML flows, and integrates with the audit log for every login event. \
+            Each verification path emits structured telemetry for downstream analytics.\n\n\
+            # Short A\n\nshort body a.\n\n\
+            # Billing Service S\n\n\
+            The billing service runs nightly to charge customers on their monthly cycle. \
+            It batches invoices, handles failed payments with retry, and notifies the dunning workflow. \
+            Reconciliation reports are emitted to the finance pipeline every morning.\n\n\
+            # Short B\n\nshort body b.";
+
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        for (name, strategy, body) in [
+            ("h.md", "hierarchy", body_h),
+            ("s.md", "sentence_aware", body_s),
+        ] {
+            let req = IngestRequest {
+                source: IngestSource::Text {
+                    name: (*name).to_string(),
+                    content: (*body).to_string(),
+                },
+                namespace: "strategy_ns".into(),
+                chunk_strategy: (*strategy).to_string(),
+            };
+            run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+        }
+
+        let count_for_source = |s: &str| -> i64 {
+            let n: Option<i64> = Spi::get_one(&format!(
+                "SELECT count(*) FROM pgrg.chunks c \
+                 JOIN pgrg.documents d ON d.id = c.document_id \
+                 WHERE d.source = '{s}' AND d.namespace = 'strategy_ns'"
+            ))
+            .unwrap();
+            n.unwrap_or(0)
+        };
+        let n_h = count_for_source("h.md");
+        let n_s = count_for_source("s.md");
+        assert!(n_h > 0 && n_s > 0, "both strategies must produce chunks");
+        assert_ne!(
+            n_h, n_s,
+            "SC-008: hierarchy and sentence_aware must differ in chunk count, got h={n_h}, s={n_s}"
+        );
+    }
+
+    #[pg_test]
+    fn token_count_present_on_chunks() {
+        // SC-008 second clause: chunks have token_count set.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('tokens_ns')").unwrap();
+
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "t.md".into(),
+                content: "short text body for token count check".into(),
+            },
+            namespace: "tokens_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+        run_job(&mut client, &req, &embedder, &provider).expect("run_job ok");
+
+        let nulls: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.chunks WHERE namespace = 'tokens_ns' AND token_count IS NULL",
+        )
+        .unwrap();
+        assert_eq!(nulls, Some(0), "all chunks must have token_count set");
+    }
+
+    #[pg_test]
+    fn embedder_is_loaded_once_per_worker_not_per_job() {
+        // SC-009: source-contract assertion — build_backend must be called
+        // before the latch loop so the model is loaded exactly once per worker.
+        let src = include_str!("bgw/worker.rs");
+        let pos_build = src
+            .find("build_backend()")
+            .expect("must call build_backend");
+        let pos_loop = src.find("wait_latch").expect("must enter latch loop");
+        assert!(
+            pos_build < pos_loop,
+            "SC-009: build_backend must be called before the latch loop (model loaded once)"
+        );
+    }
 }
 
 #[cfg(test)]
