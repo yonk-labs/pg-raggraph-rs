@@ -1747,6 +1747,25 @@ mod tests {
             "SC-009: build_backend must be called before the latch loop (model loaded once)"
         );
     }
+
+    #[pg_test]
+    fn master_key_path_guc_is_suset_not_sighup() {
+        // SC-007 (Plan 1 deferred concern): the GUC must require superuser to
+        // change. A non-superuser session that tries SET pgrg.master_key_path
+        // must fail with insufficient privilege. Suset context guarantees this
+        // at the GUC layer, but we lock the contract via an introspection check
+        // because pg_test runs as superuser and cannot directly assert privilege
+        // rejection without role-switching gymnastics.
+        let context: Option<String> = Spi::get_one(
+            "SELECT context FROM pg_settings WHERE name = 'pg_raggraph.master_key_path'",
+        )
+        .unwrap();
+        assert_eq!(
+            context.as_deref(),
+            Some("superuser"),
+            "master_key_path GUC must be Suset (pg_settings.context = 'superuser')"
+        );
+    }
 }
 
 #[cfg(test)]
