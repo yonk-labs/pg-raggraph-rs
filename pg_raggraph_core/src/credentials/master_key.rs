@@ -4,8 +4,6 @@
 //! Caller (`pg_raggraph` crate) wires this into `_PG_init` so an OS-level
 //! mis-permissioned key file errors out before queries can run.
 
-#![allow(clippy::unnecessary_debug_formatting)]
-
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -43,23 +41,24 @@ impl MasterKey {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let meta =
-                fs::metadata(path).map_err(|e| CoreError::Crypto(format!("stat {path:?}: {e}")))?;
+            let meta = fs::metadata(path)
+                .map_err(|e| CoreError::Crypto(format!("stat {}: {e}", path.display())))?;
             let mode = meta.permissions().mode() & 0o777;
             // Reject any group or world read/write/execute bit.
             if mode & 0o077 != 0 {
                 return Err(CoreError::Crypto(format!(
-                    "master key file {path:?} has permission {mode:#o} \
-                     (group or world readable); set mode 0600"
+                    "master key file {} has permission {mode:#o} \
+                     (group or world readable); set mode 0600",
+                    path.display()
                 )));
             }
         }
 
-        let mut f =
-            fs::File::open(path).map_err(|e| CoreError::Crypto(format!("open {path:?}: {e}")))?;
+        let mut f = fs::File::open(path)
+            .map_err(|e| CoreError::Crypto(format!("open {}: {e}", path.display())))?;
         let mut buf = Vec::with_capacity(MASTER_KEY_LEN + 1);
         f.read_to_end(&mut buf)
-            .map_err(|e| CoreError::Crypto(format!("read {path:?}: {e}")))?;
+            .map_err(|e| CoreError::Crypto(format!("read {}: {e}", path.display())))?;
         if buf.len() != MASTER_KEY_LEN {
             return Err(CoreError::Crypto(format!(
                 "master key file must be exactly {MASTER_KEY_LEN} bytes, got {}",
