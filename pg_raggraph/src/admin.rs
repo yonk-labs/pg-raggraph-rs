@@ -73,6 +73,25 @@ fn namespace_drop(name: &str, cascade: default!(bool, "false")) {
     });
 }
 
+/// Load the master key from the `pg_raggraph.master_key_path` GUC, if set.
+/// Returns `None` when the GUC is unset (plaintext fallback path).
+/// `ereport!`s an ERROR if the GUC is set but the file cannot be loaded —
+/// failing closed is the safe default.
+fn load_master_key() -> Option<pg_raggraph_core::credentials::MasterKey> {
+    let path = crate::gucs::MASTER_KEY_PATH.get()?;
+    let path_str = path.to_string_lossy().into_owned();
+    match pg_raggraph_core::credentials::MasterKey::load_from_path(&path_str) {
+        Ok(k) => Some(k),
+        Err(e) => {
+            ereport!(
+                ERROR,
+                PgSqlErrorCode::ERRCODE_CONFIG_FILE_ERROR,
+                format!("pg_raggraph.master_key_path failed to load: {e}")
+            );
+        }
+    }
+}
+
 #[pg_extern]
 fn provider_create(
     name: &str,
@@ -90,6 +109,30 @@ fn provider_create(
             format!("provider kind must be 'llm' or 'embedding', got `{kind}`")
         );
     }
+
+    // SC-003: encrypt credentials at rest when master key is configured.
+    let stored_credential: Option<String> = match credential {
+        None => None,
+        Some(c) if pg_raggraph_core::credentials::is_encrypted(c) => {
+            // Idempotent: never double-encrypt.
+            Some(c.to_string())
+        }
+        Some(c) => match load_master_key() {
+            Some(key) => Some(
+                pg_raggraph_core::credentials::encrypt_v1(c, key.as_bytes()).unwrap_or_else(|e| {
+                    ereport!(
+                        ERROR,
+                        PgSqlErrorCode::ERRCODE_INTERNAL_ERROR,
+                        format!("credential encrypt failed: {e}")
+                    );
+                }),
+            ),
+            // SC-005: plaintext fallback path. WARNING already logged at
+            // _PG_init; do not log per-call.
+            None => Some(c.to_string()),
+        },
+    };
+
     Spi::connect_mut(|client| {
         client
             .update(
@@ -110,7 +153,7 @@ fn provider_create(
                     provider.into(),
                     base_url.into(),
                     model.into(),
-                    credential.into(),
+                    stored_credential.as_deref().into(),
                     config.into(),
                 ],
             )

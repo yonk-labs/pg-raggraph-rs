@@ -15,6 +15,12 @@ mod ingest_extracted;
 mod ingest_profile;
 mod retrieval;
 
+/// Test-only sentinel: set to `true` when `_PG_init` fires the SC-005 WARNING.
+/// Exposed for the pgrx test that asserts the warning path executed.
+#[cfg(any(test, feature = "pg_test"))]
+pub static MASTER_KEY_WARNING_FIRED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Called by PostgreSQL when the extension shared library is loaded.
 /// Registers GUCs so they are available before CREATE EXTENSION runs.
 /// When loaded via `shared_preload_libraries`, also registers background workers.
@@ -22,6 +28,16 @@ mod retrieval;
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
     gucs::register();
+
+    // SC-005: warn at startup when credentials will be stored plaintext.
+    if gucs::MASTER_KEY_PATH.get().is_none() {
+        pgrx::warning!(
+            "pgrg.master_key_path not set — provider credentials stored plaintext. \
+             They will appear in `pg_dump`. Set a master key for production."
+        );
+        #[cfg(any(test, feature = "pg_test"))]
+        MASTER_KEY_WARNING_FIRED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 
     // SC-001: only register BGWs when loading via shared_preload_libraries.
     // During CREATE EXTENSION, this flag is false and we skip registration.
