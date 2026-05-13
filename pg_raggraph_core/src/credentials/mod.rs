@@ -4,9 +4,10 @@
 //! `encrypt` (AES-256-GCM with the `enc:v1:<nonce>:<ciphertext>` storage
 //! format).
 
+pub mod encrypt;
 pub mod master_key;
 pub mod redact;
-// pub mod encrypt;     // <-- added in Task 5
 
+pub use encrypt::{decrypt_v1, encrypt_v1, is_encrypted};
 pub use master_key::MasterKey;
 pub use redact::redact;
