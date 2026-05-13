@@ -32,6 +32,9 @@ ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, fea
 tokenizers = { version = "0.20", optional = true, default-features = false, features = ["onig"] }
 ndarray = { version = "0.17", optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.rust]
 unsafe_code = "forbid"
 

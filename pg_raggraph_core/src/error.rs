@@ -23,6 +23,9 @@ pub enum CoreError {
     /// ergonomics in code that handles `metadata` / `properties` columns.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    #[error("crypto error: {0}")]
+    Crypto(String),
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;
