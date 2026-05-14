@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::{CoreError, CoreResult};
-use crate::llm::{Extraction, LlmProvider};
+use crate::llm::{Completion, Extraction, LlmProvider};
 
 /// Fallback backoff (ms) used if `backoff_ms` is empty or attempt index exceeds it.
 const FALLBACK_BACKOFF_MS: u64 = 1000;
@@ -57,10 +57,15 @@ impl<P: LlmProvider> RetryingProvider<P> {
     fn is_retryable(err: &CoreError) -> bool {
         matches!(err, CoreError::Http(_))
     }
-}
 
-impl<P: LlmProvider> LlmProvider for RetryingProvider<P> {
-    fn extract(&self, chunk_text: &str, namespace: &str) -> CoreResult<Extraction> {
+    /// Generic retry loop used by both `extract` and `complete`. Calls `op`
+    /// up to `max_attempts` times with `backoff_ms` exponential delays,
+    /// bounded by `total_cap_ms` wall-clock. Retries `CoreError::Http`
+    /// errors only; permanent errors fail fast.
+    fn run_with_retry<T, F>(&self, mut op: F) -> CoreResult<T>
+    where
+        F: FnMut() -> CoreResult<T>,
+    {
         let start = Instant::now();
         let cap = Duration::from_millis(self.total_cap_ms);
         let mut last_err: Option<CoreError> = None;
@@ -68,7 +73,7 @@ impl<P: LlmProvider> LlmProvider for RetryingProvider<P> {
             if start.elapsed() >= cap {
                 break;
             }
-            match self.inner.extract(chunk_text, namespace) {
+            match op() {
                 Ok(v) => return Ok(v),
                 Err(e) if Self::is_retryable(&e) => {
                     last_err = Some(e);
@@ -91,5 +96,15 @@ impl<P: LlmProvider> LlmProvider for RetryingProvider<P> {
             }
         }
         Err(last_err.unwrap_or_else(|| CoreError::Llm("retries exhausted".into())))
+    }
+}
+
+impl<P: LlmProvider> LlmProvider for RetryingProvider<P> {
+    fn extract(&self, chunk_text: &str, namespace: &str) -> CoreResult<Extraction> {
+        self.run_with_retry(|| self.inner.extract(chunk_text, namespace))
+    }
+
+    fn complete(&self, prompt: &str) -> CoreResult<Completion> {
+        self.run_with_retry(|| self.inner.complete(prompt))
     }
 }

@@ -85,6 +85,74 @@ fn gives_up_after_max_attempts_on_transient() {
     assert_eq!(inner.calls.load(Ordering::SeqCst), 3);
 }
 
+// ---------------------------------------------------------------------------
+// Test scaffolding for complete() retry behavior. Reuses the existing
+// CountingProvider pattern but with a complete()-returning behavior list.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct CompletingCountingProvider {
+    calls: AtomicUsize,
+    behavior: Vec<Behavior>,
+}
+
+impl CompletingCountingProvider {
+    fn new(behaviors: Vec<Behavior>) -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            behavior: behaviors,
+        })
+    }
+}
+
+impl LlmProvider for CompletingCountingProvider {
+    fn extract(
+        &self,
+        _chunk_text: &str,
+        _namespace: &str,
+    ) -> pg_raggraph_core::CoreResult<Extraction> {
+        unreachable!("CompletingCountingProvider only exercises complete()")
+    }
+
+    fn complete(
+        &self,
+        _prompt: &str,
+    ) -> pg_raggraph_core::CoreResult<pg_raggraph_core::llm::Completion> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        match self.behavior.get(n).unwrap_or(&Behavior::Ok) {
+            Behavior::Transient => Err(pg_raggraph_core::CoreError::Http("503".into())),
+            Behavior::Permanent => Err(pg_raggraph_core::CoreError::Llm("400 bad request".into())),
+            Behavior::Ok => Ok(pg_raggraph_core::llm::Completion {
+                text: "ok".into(),
+                prompt_tokens: 0,
+                completion_tokens: 0,
+            }),
+        }
+    }
+}
+
+#[test]
+fn complete_retries_transient_then_succeeds() {
+    let inner = CompletingCountingProvider::new(vec![Behavior::Transient, Behavior::Ok]);
+    let wrapped = RetryingProvider::new(inner.clone())
+        .with_max_attempts(3)
+        .with_backoff_ms(&[10, 20]);
+    let out = wrapped.complete("hello").unwrap();
+    assert_eq!(out.text, "ok");
+    assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn complete_fails_fast_on_permanent() {
+    let inner = CompletingCountingProvider::new(vec![Behavior::Permanent]);
+    let wrapped = RetryingProvider::new(inner.clone())
+        .with_max_attempts(3)
+        .with_backoff_ms(&[10, 20]);
+    let err = wrapped.complete("hello").expect_err("permanent");
+    assert!(format!("{err}").contains("bad request"));
+    assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
+}
+
 #[test]
 fn respects_total_wall_clock_cap() {
     let inner = CountingProvider::new(vec![Behavior::Transient; 10]);
