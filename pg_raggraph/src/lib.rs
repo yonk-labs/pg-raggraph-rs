@@ -1938,6 +1938,131 @@ mod tests {
             Spi::get_one("SELECT count(*) FROM pgrg.providers WHERE name = 'goodperm-p'").unwrap();
         assert_eq!(n, Some(1));
     }
+
+    #[pg_test]
+    fn e2e_three_statement_demo_with_mock_provider() {
+        // SC-009: pgrg.ask returns a non-empty answer + structured citations.
+        // SC-010: every citation references a chunk that was actually retrieved
+        //         (verified end-to-end: each cited chunk_id exists in
+        //         pgrg.chunks). _core::llm::prompt::extract_citations silently
+        //         drops forged `[N]` markers outside the prompt's id_map, so
+        //         the only way `[1]` / `[2]` survive into the output is if
+        //         the chunks they map to actually came from pgrg.query.
+        // SC-017: MockProvider drives the LLM step — no network, no creds.
+        //
+        // Test wiring: pgrx tests run inside one transaction that ROLLBACKs
+        // at the end, so any rows inserted into `pgrg.ingest_jobs` are
+        // invisible to the bg-worker backends (MVCC). The existing
+        // `ingest_text_enqueues_payload_and_pipeline_writes_document` test
+        // handles this by driving `_core::ingest::run::run_job` directly
+        // (line ~1280 here: "Part 2: directly drive run_job (the same path
+        // the worker takes)"). We follow that pattern — the worker's
+        // dispatch wrapper is exercised by Plan 3's queue/launcher tests;
+        // this test exercises the ingest → retrieve → ask → cite path
+        // end-to-end inside the same transaction.
+        //
+        // Mock-provider mechanics (see pg_raggraph/src/ask.rs::build_provider_impl):
+        // a provider row with `provider = 'mock'` stuffs the row's
+        // credential string into MockProvider::with_stub_answer. We seed
+        // it with an answer containing `[1]` and `[2]` to prove that
+        // `_core::llm::ask::ask` wires retrieval → prompt id_map →
+        // structured citations correctly. With two short docs and top_k=10,
+        // both seeded chunks will be returned by retrieval and occupy the
+        // first two id_map slots, so `[1]` and `[2]` both resolve.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('e2e_demo_ns')").unwrap();
+
+        // 1) Register a 'mock' provider whose stub answer carries [1] and [2].
+        Spi::run(
+            "SELECT pgrg.provider_create('e2e-demo-mock', 'llm', 'mock', NULL, 'mock-v1', \
+             'Auth verifies user credentials [1]. Tokens expire after 24 hours [2].', '{}')",
+        )
+        .unwrap();
+
+        // 2) Drive the ingest pipeline directly for two short docs. This is
+        //    the same code path the bg worker takes — see
+        //    pg_raggraph/src/bgw/worker.rs::run_one (`run_job(&mut client,
+        //    &req, &*embedder, &provider)`).
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        let req1 = IngestRequest {
+            source: IngestSource::Text {
+                name: "auth-doc-1".into(),
+                content: "the auth module verifies user credentials".into(),
+            },
+            namespace: "e2e_demo_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        run_job(&mut client, &req1, &embedder, &provider).expect("run_job auth-doc-1");
+
+        let req2 = IngestRequest {
+            source: IngestSource::Text {
+                name: "token-doc-1".into(),
+                content: "session tokens expire after 24 hours of inactivity".into(),
+            },
+            namespace: "e2e_demo_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        run_job(&mut client, &req2, &embedder, &provider).expect("run_job token-doc-1");
+
+        // Sanity: both docs landed.
+        let docs: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.documents \
+             WHERE namespace = 'e2e_demo_ns' AND source IN ('auth-doc-1', 'token-doc-1')",
+        )
+        .unwrap();
+        assert_eq!(docs, Some(2), "expected 2 ingested documents, got {docs:?}");
+
+        // 3) Call pgrg.ask. Wrap the TableIterator row in to_jsonb so we get
+        //    one inspectable jsonb object.
+        let result: Option<pgrx::JsonB> = Spi::get_one(
+            "SELECT to_jsonb(t) FROM pgrg.ask( \
+                 'what does the auth module do?', \
+                 NULL::jsonb, 10, 'e2e_demo_ns', 1, 'e2e-demo-mock' \
+             ) t",
+        )
+        .unwrap();
+        let r = result.expect("pgrg.ask returned NULL").0;
+
+        let answer = r["answer"].as_str().expect("answer must be a string");
+        let citations = r["citations"]
+            .as_array()
+            .expect("citations must be an array");
+        let mode = r["mode_used"].as_str().expect("mode_used must be a string");
+
+        // SC-009: non-empty answer + at least one citation.
+        assert!(!answer.is_empty(), "answer empty: {answer:?}");
+        assert!(
+            !citations.is_empty(),
+            "expected >=1 citation, got 0. answer={answer:?}"
+        );
+
+        // SC-010: every cited chunk_id must exist in pgrg.chunks.
+        //         If extract_citations had forged or fabricated an id, the
+        //         row would be missing here.
+        for c in citations {
+            let cid = c["chunk_id"].as_str().expect("chunk_id must be a string");
+            let exists: Option<i64> = Spi::get_one_with_args(
+                "SELECT count(*)::bigint FROM pgrg.chunks WHERE id::text = $1",
+                &[cid.into()],
+            )
+            .unwrap();
+            assert_eq!(
+                exists,
+                Some(1),
+                "cited chunk_id {cid} not in pgrg.chunks (forged)"
+            );
+        }
+
+        // Plan 4 has no smart-mode escalation yet — ask always reports hybrid.
+        assert_eq!(mode, "hybrid");
+    }
 }
 
 #[cfg(test)]
