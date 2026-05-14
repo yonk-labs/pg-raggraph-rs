@@ -39,6 +39,10 @@ ndarray = { version = "0.17", optional = true }
 # to match the bg worker model — one job per worker process, no tokio runtime.
 reqwest = { workspace = true }
 
+# Tiny regex (no back-references) for citation extraction in `_core::llm::prompt`.
+# Pattern is `\[(\d+)\]` — no fancy features needed.
+regex-lite = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
 mockito = "1"
