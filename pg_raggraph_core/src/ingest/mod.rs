@@ -9,6 +9,7 @@ pub mod content_hash;
 pub mod pg_client;
 pub mod profile;
 pub mod profile_resolve;
+pub mod resolve;
 pub mod run;
 pub mod types;
 

@@ -170,7 +170,7 @@ pub struct FakePgClient {
     /// Buffers that become canonical state on commit.
     buffered_documents: Vec<DocRow>,
     buffered_chunks: Vec<ChunkRow>,
-    buffered_entities: Vec<EntityRow>,
+    pub buffered_entities: Vec<EntityRow>,
     buffered_relationships: Vec<RelRow>,
     buffered_chunk_entities: Vec<ChunkEntityRow>,
 }
