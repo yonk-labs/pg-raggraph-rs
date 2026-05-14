@@ -14,7 +14,6 @@
 use pg_raggraph_core::embedding::EmbeddingBackend;
 use pg_raggraph_core::ingest::types::{IngestRequest, IngestSource};
 use pg_raggraph_core::ingest::{RunJobOutcome, run_job};
-use pg_raggraph_core::llm::MockProvider;
 use pgrx::bgworkers::*;
 use pgrx::prelude::*;
 use std::panic::AssertUnwindSafe;
@@ -23,6 +22,7 @@ use std::time::Duration;
 
 use crate::bgw::{embedder_cache, queue, spi_client};
 use crate::gucs;
+use crate::provider_factory;
 
 /// Register `bgw_workers` static BGWs (called from `_PG_init`).
 pub fn register_workers() {
@@ -58,9 +58,11 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
     let embedder: Arc<dyn EmbeddingBackend> = embedder_cache::build_backend();
     pgrx::log!("{worker_name}: embedder loaded (dim={})", embedder.dim());
 
-    // Plan 3 ships `MockProvider`. Plan 4 will look up the namespace's
-    // configured provider and instantiate the matching impl.
-    let provider = MockProvider::new();
+    // T23 (Plan 4): the provider is resolved PER JOB (inside the same
+    // BackgroundWorker::transaction as `run_job`) — different jobs may run
+    // in different namespaces, each with its own `pgrg.namespaces.llm_provider`.
+    // Falls back to a no-op MockProvider if no provider is configured, which
+    // preserves Plan 3 bg-worker test compatibility (queue/launcher tests).
 
     let poll = Duration::from_secs(1);
     while BackgroundWorker::wait_latch(Some(poll)) {
@@ -84,7 +86,8 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
             }
         };
 
-        // SC-011: run_job runs inside one BackgroundWorker::transaction so
+        // SC-011 + SC-013: resolve the namespace's LLM provider, then run
+        // ingest. Both happen inside one `BackgroundWorker::transaction` so
         // an Err return rolls the whole document back atomically.
         //
         // `dyn EmbeddingBackend` is not `RefUnwindSafe` and `CoreError` (which
@@ -92,9 +95,11 @@ pub extern "C-unwind" fn pg_raggraph_worker_main(arg: pgrx::pg_sys::Datum) {
         // `AssertUnwindSafe` to opt in. Both types are still safe to use across
         // a panic boundary in practice — the embedder is stateless after
         // construction and CoreError is plain data.
+        let job_namespace = req.namespace.clone();
         let outcome: JobOutcome = BackgroundWorker::transaction(AssertUnwindSafe(|| {
+            let provider = provider_factory::resolve_or_default_provider(&job_namespace);
             let mut client = spi_client::SpiPgClient;
-            match run_job(&mut client, &req, &*embedder, &provider) {
+            match run_job(&mut client, &req, &*embedder, &*provider) {
                 Ok(RunJobOutcome::Completed {
                     document_id,
                     chunk_count,

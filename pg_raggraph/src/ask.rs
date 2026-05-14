@@ -10,11 +10,12 @@
 //! Reuses `pgrg.query` for retrieval (SC-016) — this module does not
 //! construct retrieval SQL.
 
-use pg_raggraph_core::llm::LlmProvider;
 use pg_raggraph_core::llm::ask::{AskRequest, ask as core_ask};
 use pg_raggraph_core::llm::prompt::PromptChunk;
 use pg_raggraph_core::llm::resolve::{ProviderRef, resolve_provider};
 use pgrx::prelude::*;
+
+use crate::provider_factory;
 
 /// `pgrg.ask(q, filter, top_k, namespace, hops, llm_provider)`
 ///
@@ -125,8 +126,8 @@ fn ask(
     let budget = budget.unwrap_or(4000);
 
     // 4) Build provider impl (decrypts credential at use site).
-    let provider_impl = build_provider_impl(&provider_name);
-    let provider_model = provider_model_for(&provider_name);
+    let provider_impl = provider_factory::build_provider_impl(&provider_name);
+    let provider_model = provider_factory::provider_model_for(&provider_name);
 
     // 5) Orchestrate via _core::llm::ask::ask().
     let req = AskRequest {
@@ -173,132 +174,4 @@ fn ask(
 fn uuid_from_row(o: Option<pgrx::Uuid>) -> uuid::Uuid {
     o.and_then(|u| uuid::Uuid::parse_str(&u.to_string()).ok())
         .unwrap_or(uuid::Uuid::nil())
-}
-
-/// Look up the provider's model name from `pgrg.providers`. Used for
-/// `signals.llm.model` attribution.
-fn provider_model_for(name: &str) -> String {
-    Spi::get_one_with_args(
-        "SELECT model FROM pgrg.providers WHERE name = $1",
-        &[name.into()],
-    )
-    .ok()
-    .flatten()
-    .unwrap_or_default()
-}
-
-/// Build the right `LlmProvider` impl from a `pgrg.providers` row,
-/// decrypting the credential if it is in `enc:v1:` form.
-/// `ereport!(ERROR)` on any malformed config — fail closed.
-///
-/// **Security:** the decrypted credential is held in the returned
-/// `Box<dyn LlmProvider>` for the duration of one ask call and dropped at
-/// function return. It is never logged or returned in error messages.
-fn build_provider_impl(name: &str) -> Box<dyn LlmProvider> {
-    // Fetch the row from pgrg.providers. We need `provider` (kind-of-LLM:
-    // 'openai'/'anthropic'/'ollama'/'mock'), `model`, `base_url`,
-    // `credential`. The `kind` column ('llm' vs 'embedding') was already
-    // checked in resolve_provider.
-    let row: Vec<(String, String, Option<String>, Option<String>)> = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT provider, COALESCE(model, ''), base_url, credential \
-                 FROM pgrg.providers WHERE name = $1",
-                None,
-                &[name.into()],
-            )
-            .expect("pgrg.ask: provider row select")
-            .map(|r| {
-                (
-                    r.get::<String>(1).ok().flatten().unwrap_or_default(),
-                    r.get::<String>(2).ok().flatten().unwrap_or_default(),
-                    r.get::<String>(3).ok().flatten(),
-                    r.get::<String>(4).ok().flatten(),
-                )
-            })
-            .collect()
-    });
-
-    let (provider_kind, model, base_url, credential_opt) = match row.into_iter().next() {
-        Some(t) => t,
-        None => {
-            ereport!(
-                ERROR,
-                PgSqlErrorCode::ERRCODE_NO_DATA_FOUND,
-                format!("pgrg.ask: provider `{name}` not found")
-            );
-        }
-    };
-
-    // Decrypt credential if present and encrypted; otherwise keep as-is.
-    let plaintext_cred: String = match credential_opt {
-        None => String::new(),
-        Some(c) if pg_raggraph_core::credentials::is_encrypted(&c) => {
-            let path = match crate::gucs::MASTER_KEY_PATH.get() {
-                Some(p) => p,
-                None => {
-                    ereport!(
-                        ERROR,
-                        PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
-                        "pgrg.ask: credential is encrypted but pg_raggraph.master_key_path is unset"
-                    );
-                }
-            };
-            let path_str = path.to_string_lossy().into_owned();
-            let key = match pg_raggraph_core::credentials::MasterKey::load_from_path(&path_str) {
-                Ok(k) => k,
-                Err(e) => {
-                    ereport!(
-                        ERROR,
-                        PgSqlErrorCode::ERRCODE_CONFIG_FILE_ERROR,
-                        format!("pgrg.ask: master key load failed: {e}")
-                    );
-                }
-            };
-            match pg_raggraph_core::credentials::decrypt_v1(&c, key.as_bytes()) {
-                Ok(p) => p,
-                Err(e) => {
-                    ereport!(
-                        ERROR,
-                        PgSqlErrorCode::ERRCODE_INTERNAL_ERROR,
-                        format!("pgrg.ask: credential decrypt failed: {e}")
-                    );
-                }
-            }
-        }
-        Some(c) => c,
-    };
-
-    let base = base_url.unwrap_or_else(|| match provider_kind.as_str() {
-        "openai" => "https://api.openai.com".into(),
-        "anthropic" => "https://api.anthropic.com".into(),
-        "ollama" => "http://localhost:11434".into(),
-        _ => String::new(),
-    });
-
-    match provider_kind.as_str() {
-        "openai" => Box::new(pg_raggraph_core::llm::openai::OpenAiProvider::new(
-            plaintext_cred,
-            model,
-            base,
-        )),
-        "anthropic" => Box::new(pg_raggraph_core::llm::anthropic::AnthropicProvider::new(
-            plaintext_cred,
-            model,
-            base,
-        )),
-        "ollama" => Box::new(pg_raggraph_core::llm::ollama::OllamaProvider::new(
-            model, base,
-        )),
-        "mock" => Box::new(
-            pg_raggraph_core::llm::MockProvider::default().with_stub_answer(plaintext_cred),
-        ),
-        other => {
-            ereport!(
-                ERROR,
-                PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
-                format!("pgrg.ask: unknown provider kind `{other}`")
-            );
-        }
-    }
 }

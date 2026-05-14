@@ -14,6 +14,7 @@ mod gucs;
 mod ingest;
 mod ingest_extracted;
 mod ingest_profile;
+mod provider_factory;
 mod retrieval;
 
 /// Test-only sentinel: set to `true` when `_PG_init` fires the SC-005 WARNING.
