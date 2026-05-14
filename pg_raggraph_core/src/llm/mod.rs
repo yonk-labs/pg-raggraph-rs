@@ -15,6 +15,7 @@
 
 pub mod http;
 pub mod mock;
+pub mod openai;
 pub mod retry;
 
 pub use mock::MockProvider;
