@@ -13,6 +13,7 @@
 //! worker's tokio runtime. Trait shape changes between plans require
 //! Constraint Ask First (signal in the Plan 4 brief).
 
+pub mod anthropic;
 pub mod http;
 pub mod mock;
 pub mod openai;
