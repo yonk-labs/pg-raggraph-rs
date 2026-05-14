@@ -26,6 +26,16 @@ pub enum CoreError {
 
     #[error("crypto error: {0}")]
     Crypto(String),
+
+    /// HTTP transport failure (connect, send, read body, or non-2xx without
+    /// provider-specific parsing). Producers: `_core::llm::http`.
+    #[error("http error: {0}")]
+    Http(String),
+
+    /// LLM provider produced an unrecoverable response (malformed JSON,
+    /// schema mismatch, permanent 4xx). Producers: `_core::llm::*` impls.
+    #[error("llm error: {0}")]
+    Llm(String),
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;

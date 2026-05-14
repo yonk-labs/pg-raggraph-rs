@@ -23,3 +23,4 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

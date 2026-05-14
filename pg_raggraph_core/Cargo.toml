@@ -35,8 +35,13 @@ ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, fea
 tokenizers = { version = "0.20", optional = true, default-features = false, features = ["onig"] }
 ndarray = { version = "0.17", optional = true }
 
+# Shared HTTP client for LLM providers (`_core::llm::http`). Sync (`blocking`)
+# to match the bg worker model — one job per worker process, no tokio runtime.
+reqwest = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
+mockito = "1"
 
 [lints.rust]
 unsafe_code = "forbid"
