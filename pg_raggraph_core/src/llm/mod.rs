@@ -14,6 +14,7 @@
 //! Constraint Ask First (signal in the Plan 4 brief).
 
 pub mod anthropic;
+pub mod ask;
 pub mod http;
 pub mod mock;
 pub mod ollama;
