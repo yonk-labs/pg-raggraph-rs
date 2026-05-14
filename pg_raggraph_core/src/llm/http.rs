@@ -112,9 +112,11 @@ impl HttpClient {
         }
     }
 
-    /// POST a JSON body. Returns `(status_code, response_body)` so the
-    /// caller can apply provider-specific parsing and classify via
-    /// `HttpClassification::from_status`.
+    /// POST a JSON body with arbitrary headers. Returns `(status_code, response_body)`.
+    ///
+    /// This is the general form: all provider-specific header shapes (Bearer auth,
+    /// `x-api-key`, `anthropic-version`, etc.) go through here so every POST
+    /// inherits the configured timeout and User-Agent from the shared client.
     ///
     /// Returning the raw `(status, body)` pair (instead of `Result<String>`)
     /// is deliberate: the retry wrapper in T10 needs the status code to
@@ -125,15 +127,15 @@ impl HttpClient {
     /// Returns `CoreError::Http` only on transport-level failures (DNS,
     /// connect, send, read body). Non-2xx responses return `Ok` here and
     /// are classified by the caller.
-    pub fn post_json(
+    pub fn post_json_with_headers(
         &self,
         url: &str,
-        bearer: Option<&str>,
+        headers: &[(&str, &str)],
         body: &serde_json::Value,
     ) -> CoreResult<(u16, String)> {
         let mut req = self.inner.post(url).json(body);
-        if let Some(t) = bearer {
-            req = req.bearer_auth(t);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
         }
         let resp = req
             .send()
@@ -143,5 +145,24 @@ impl HttpClient {
             .text()
             .map_err(|e| CoreError::Http(format!("read body: {e}")))?;
         Ok((status, body))
+    }
+
+    /// POST a JSON body with optional Bearer auth. Thin wrapper over
+    /// [`Self::post_json_with_headers`] preserved for `OpenAI`'s auth shape.
+    ///
+    /// # Errors
+    /// Returns `CoreError::Http` on transport-level failures.
+    pub fn post_json(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+        body: &serde_json::Value,
+    ) -> CoreResult<(u16, String)> {
+        let bearer_value = bearer.map(|t| format!("Bearer {t}"));
+        let headers: Vec<(&str, &str)> = bearer_value
+            .as_deref()
+            .map(|v| vec![("authorization", v)])
+            .unwrap_or_default();
+        self.post_json_with_headers(url, &headers, body)
     }
 }

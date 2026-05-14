@@ -97,3 +97,24 @@ fn http_client_respects_request_timeout() {
         "expected to bail out within ~{upper_bound:?}, took {elapsed:?}"
     );
 }
+
+#[test]
+fn post_json_with_headers_sends_each_header() {
+    let mut srv = mockito::Server::new();
+    let _m = srv
+        .mock("POST", "/x")
+        .match_header("x-api-key", "k123")
+        .match_header("custom-trace", "trace-abc")
+        .with_status(200)
+        .with_body("{}")
+        .create();
+    let client = HttpClient::new();
+    let (status, _body) = client
+        .post_json_with_headers(
+            &format!("{}/x", srv.url()),
+            &[("x-api-key", "k123"), ("custom-trace", "trace-abc")],
+            &serde_json::json!({"ok": true}),
+        )
+        .expect("post");
+    assert_eq!(status, 200);
+}

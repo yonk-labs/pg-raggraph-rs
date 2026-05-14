@@ -6,13 +6,13 @@
 //!   other 4xx      -> `CoreError::Llm` (permanent)
 //!
 //! Auth note: Anthropic uses the `x-api-key` header (NOT bearer auth), plus the
-//! required `anthropic-version: 2023-06-01` header. The shared `HttpClient::post_json`
-//! only supports bearer auth, so this provider builds the `reqwest::blocking` request
-//! directly. Ollama (T13) also doesn't use bearer; if a third non-bearer provider
-//! lands, consider extending `HttpClient` to accept arbitrary headers.
+//! required `anthropic-version: 2023-06-01` header. All requests go through
+//! `HttpClient::post_json_with_headers` so the configured timeout (30 s) and
+//! User-Agent (`pg-raggraph/0.1`) apply uniformly. Ollama (T13) can use the
+//! same surface for its auth-free calls.
 
 use crate::error::{CoreError, CoreResult};
-use crate::llm::http::HttpClassification;
+use crate::llm::http::{HttpClassification, HttpClient};
 use crate::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
 
 const EXTRACTION_TOOL_NAME: &str = "extract_graph";
@@ -21,6 +21,7 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     base_url: String,
+    http: HttpClient,
 }
 
 impl AnthropicProvider {
@@ -33,6 +34,7 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             model: model.into(),
             base_url: base_url.into(),
+            http: HttpClient::new(),
         }
     }
 }
@@ -86,22 +88,12 @@ impl LlmProvider for AnthropicProvider {
         });
 
         let url = format!("{}/v1/messages", self.base_url);
-        // Anthropic uses x-api-key (not bearer), so build the request directly
-        // rather than going through HttpClient::post_json.
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .post(&url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .map_err(|e| CoreError::Http(format!("send: {e}")))?;
-
-        let status = resp.status().as_u16();
-        let resp_body = resp
-            .text()
-            .map_err(|e| CoreError::Http(format!("read body: {e}")))?;
+        let headers: &[(&str, &str)] = &[
+            ("x-api-key", self.api_key.as_str()),
+            ("anthropic-version", "2023-06-01"),
+            ("content-type", "application/json"),
+        ];
+        let (status, resp_body) = self.http.post_json_with_headers(&url, headers, &body)?;
 
         match HttpClassification::from_status(status) {
             HttpClassification::Retryable => {
