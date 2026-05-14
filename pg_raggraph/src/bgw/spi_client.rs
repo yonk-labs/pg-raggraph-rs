@@ -9,8 +9,11 @@
 //! (per-doc atomicity via the wrapping `BackgroundWorker::transaction`).
 
 use pg_raggraph_core::error::{CoreError, CoreResult};
-use pg_raggraph_core::ingest::pg_client::{ChunkRow, DocRow, PgClient};
+use pg_raggraph_core::ingest::pg_client::{
+    ChunkEntityRow, ChunkRow, DocRow, EntityCandidate, EntityRow, PgClient, RelRow,
+};
 use pgrx::prelude::*;
+use uuid::Uuid;
 
 /// Build a pgvector text literal of the form `[v1,v2,...]`.
 ///
@@ -30,6 +33,21 @@ fn vector_literal(v: &[f32]) -> String {
     }
     s.push(']');
     s
+}
+
+/// Parse a pgvector text literal of the form `[v1,v2,...]` back into a
+/// `Vec<f32>`. Returns `None` on malformed input.
+fn parse_vector_literal(s: &str) -> Option<Vec<f32>> {
+    let t = s.trim();
+    let inner = t.strip_prefix('[').and_then(|x| x.strip_suffix(']'))?;
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in inner.split(',') {
+        out.push(part.trim().parse::<f32>().ok()?);
+    }
+    Some(out)
 }
 
 /// SPI adapter. Stateless — every method is a one-shot SPI call, intended to
@@ -95,6 +113,139 @@ impl PgClient for SpiPgClient {
                 .map_err(|e| CoreError::InvalidConfig(format!("spi insert chunk: {e}")))?;
             Ok(())
         })
+    }
+
+    fn insert_entity(&mut self, row: &EntityRow) -> CoreResult<()> {
+        let id = pgrx::Uuid::from_bytes(*row.id.as_bytes());
+        // Build the SQL with optional embedding inlined as pgvector literal,
+        // matching the pattern used in `insert_chunk` (pgrx 0.17 has no native
+        // pgvector binding).
+        let emb_sql = match &row.name_emb {
+            Some(v) => format!("'{}'::vector", vector_literal(v)),
+            None => "NULL".to_string(),
+        };
+        let sql = format!(
+            "INSERT INTO pgrg.entities (id, namespace, name, kind, name_emb, description) \
+             VALUES ($1, $2, $3, $4, {emb_sql}, $5) \
+             ON CONFLICT (namespace, name, kind) DO NOTHING"
+        );
+        Spi::connect_mut(|client| {
+            client
+                .update(
+                    &sql,
+                    None,
+                    &[
+                        id.into(),
+                        row.namespace.as_str().into(),
+                        row.name.as_str().into(),
+                        row.kind.as_deref().into(),
+                        row.description.as_deref().into(),
+                    ],
+                )
+                .map_err(|e| CoreError::InvalidConfig(format!("spi insert entity: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn insert_relationship(&mut self, row: &RelRow) -> CoreResult<()> {
+        let id = pgrx::Uuid::from_bytes(*row.id.as_bytes());
+        let src_id = pgrx::Uuid::from_bytes(*row.src_id.as_bytes());
+        let dst_id = pgrx::Uuid::from_bytes(*row.dst_id.as_bytes());
+        Spi::connect_mut(|client| {
+            client
+                .update(
+                    "INSERT INTO pgrg.relationships \
+                       (id, namespace, src_id, dst_id, kind, weight, description) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                     ON CONFLICT (namespace, src_id, dst_id, kind) DO NOTHING",
+                    None,
+                    &[
+                        id.into(),
+                        row.namespace.as_str().into(),
+                        src_id.into(),
+                        dst_id.into(),
+                        row.kind.as_str().into(),
+                        f64::from(row.weight).into(),
+                        row.description.as_deref().into(),
+                    ],
+                )
+                .map_err(|e| CoreError::InvalidConfig(format!("spi insert relationship: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn insert_chunk_entity(&mut self, row: &ChunkEntityRow) -> CoreResult<()> {
+        let chunk_id = pgrx::Uuid::from_bytes(*row.chunk_id.as_bytes());
+        let entity_id = pgrx::Uuid::from_bytes(*row.entity_id.as_bytes());
+        Spi::connect_mut(|client| {
+            client
+                .update(
+                    "INSERT INTO pgrg.chunk_entities (chunk_id, entity_id, confidence) \
+                     VALUES ($1, $2, $3) \
+                     ON CONFLICT (chunk_id, entity_id) DO NOTHING",
+                    None,
+                    &[
+                        chunk_id.into(),
+                        entity_id.into(),
+                        f64::from(row.confidence).into(),
+                    ],
+                )
+                .map_err(|e| CoreError::InvalidConfig(format!("spi insert chunk_entity: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn fuzzy_match_entity(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        limit: usize,
+    ) -> CoreResult<Vec<EntityCandidate>> {
+        // pg_trgm `similarity()` returns float4 in [0, 1]. We deliberately
+        // do NOT filter by GUC `pg_trgm.similarity_threshold` here — T21's
+        // resolver applies its own cosine threshold on `name_emb`.
+        let lim = i64::try_from(limit)
+            .map_err(|_| CoreError::InvalidConfig("fuzzy_match_entity: limit too large".into()))?;
+        let mut out: Vec<EntityCandidate> = Vec::new();
+        Spi::connect(|client| -> CoreResult<()> {
+            let tup = client
+                .select(
+                    "SELECT id, name, similarity(name, $2) AS sim, name_emb::text \
+                     FROM pgrg.entities \
+                     WHERE namespace = $1 \
+                     ORDER BY sim DESC \
+                     LIMIT $3",
+                    Some(lim),
+                    &[namespace.into(), name.into(), lim.into()],
+                )
+                .map_err(|e| CoreError::InvalidConfig(format!("spi fuzzy_match_entity: {e}")))?;
+            for row in tup {
+                let id: pgrx::Uuid = row
+                    .get::<pgrx::Uuid>(1)
+                    .map_err(|e| CoreError::InvalidConfig(format!("spi fuzzy id: {e}")))?
+                    .ok_or_else(|| CoreError::InvalidConfig("spi fuzzy id null".into()))?;
+                let nm: String = row
+                    .get::<String>(2)
+                    .map_err(|e| CoreError::InvalidConfig(format!("spi fuzzy name: {e}")))?
+                    .ok_or_else(|| CoreError::InvalidConfig("spi fuzzy name null".into()))?;
+                let sim: f32 = row
+                    .get::<f32>(3)
+                    .map_err(|e| CoreError::InvalidConfig(format!("spi fuzzy sim: {e}")))?
+                    .unwrap_or(0.0);
+                let emb_text: Option<String> = row
+                    .get::<String>(4)
+                    .map_err(|e| CoreError::InvalidConfig(format!("spi fuzzy emb: {e}")))?;
+                let name_emb = emb_text.and_then(|t| parse_vector_literal(&t));
+                out.push(EntityCandidate {
+                    id: Uuid::from_bytes(*id.as_bytes()),
+                    name: nm,
+                    trgm_similarity: sim,
+                    name_emb,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     fn rollback(&mut self) -> CoreResult<()> {
