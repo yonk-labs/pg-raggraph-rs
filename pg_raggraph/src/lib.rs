@@ -2063,6 +2063,90 @@ mod tests {
         // Plan 4 has no smart-mode escalation yet — ask always reports hybrid.
         assert_eq!(mode, "hybrid");
     }
+
+    #[pg_test]
+    fn ask_signals_contains_llm_attribution() {
+        // SC-018: signals.llm has provider/model/latency_ms/prompt_tokens/completion_tokens.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+        use pg_raggraph_core::llm::MockProvider;
+
+        Spi::run("SELECT pgrg.namespace_create('signals_ns')").unwrap();
+
+        // Register a fresh mock provider — unique name to avoid collision with T18.
+        Spi::run(
+            "SELECT pgrg.provider_create('signals-mock-p', 'llm', 'mock', NULL, 'mock-v18', \
+             'an answer [1].', '{}')",
+        )
+        .unwrap();
+
+        // Drive the ingest pipeline directly, same pattern as T18.
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = MockProvider::new();
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "signals-doc-x".into(),
+                content: "short fixture text for signals test".into(),
+            },
+            namespace: "signals_ns".into(),
+            chunk_strategy: "auto".into(),
+        };
+        run_job(&mut client, &req, &embedder, &provider).expect("run_job signals-doc-x");
+
+        // Read signals from pgrg.ask.
+        let result: Option<pgrx::JsonB> = Spi::get_one(
+            "SELECT to_jsonb(t) FROM pgrg.ask( \
+                 'test query?', \
+                 NULL::jsonb, 5, 'signals_ns', 1, 'signals-mock-p' \
+             ) t",
+        )
+        .unwrap();
+        let r = result.expect("pgrg.ask returned NULL").0;
+        let sig = r["signals"].clone();
+
+        // Verify signals.llm has all five required keys.
+        let llm = sig.get("llm").expect("signals.llm missing entirely");
+        for key in [
+            "provider",
+            "model",
+            "latency_ms",
+            "prompt_tokens",
+            "completion_tokens",
+        ] {
+            assert!(
+                llm.get(key).is_some(),
+                "signals.llm missing key `{key}`: {llm}"
+            );
+        }
+
+        // Sanity-check the attribution values.
+        assert_eq!(
+            llm["provider"].as_str(),
+            Some("signals-mock-p"),
+            "signals.llm.provider mismatch"
+        );
+        assert_eq!(
+            llm["model"].as_str(),
+            Some("mock-v18"),
+            "signals.llm.model mismatch"
+        );
+        assert!(
+            llm["latency_ms"].as_u64().is_some(),
+            "latency_ms must be a u64, got: {:?}",
+            llm["latency_ms"]
+        );
+        assert!(
+            llm["prompt_tokens"].as_u64().is_some(),
+            "prompt_tokens must be a u64"
+        );
+        assert!(
+            llm["completion_tokens"].as_u64().is_some(),
+            "completion_tokens must be a u64"
+        );
+    }
 }
 
 #[cfg(test)]
