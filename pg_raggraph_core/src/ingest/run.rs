@@ -21,11 +21,14 @@
 
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
 use crate::chunking::{ChunkStrategy, Chunker};
 use crate::embedding::EmbeddingBackend;
 use crate::error::{CoreError, CoreResult};
 use crate::ingest::content_hash::content_hash;
-use crate::ingest::pg_client::{ChunkRow, DocRow, PgClient};
+use crate::ingest::pg_client::{ChunkEntityRow, ChunkRow, DocRow, PgClient, RelRow};
+use crate::ingest::resolve::resolve_or_insert_entity;
 use crate::ingest::types::{IngestRequest, IngestSource};
 use crate::llm::LlmProvider;
 
@@ -86,10 +89,11 @@ pub fn run_job(
         )));
     }
 
-    // 6: extraction (Plan 3: `MockProvider` returns empty).
-    for c in &chunks {
-        let _ = provider.extract(&c.text, &req.namespace)?;
-    }
+    // 6: extraction + entity/rel/chunk_entity persistence (SC-013).
+    //    Persistence happens INSIDE step 7's transaction-shaped closure.
+    //    We pre-allocate chunk_ids here so step 7 can insert chunk_entities
+    //    referencing them while still in the same logical transaction.
+    let chunk_ids: Vec<Uuid> = chunks.iter().map(|_| Uuid::new_v4()).collect();
 
     // 7: persist in a single logical transaction.
     let doc_id = Uuid::new_v4();
@@ -102,9 +106,10 @@ pub fn run_job(
     };
     let persist_result: CoreResult<usize> = (|| {
         client.insert_document(&doc)?;
-        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+            let chunk_id = chunk_ids[i];
             let row = ChunkRow {
-                id: Uuid::new_v4(),
+                id: chunk_id,
                 document_id: doc_id,
                 namespace: req.namespace.clone(),
                 ord: chunk.ord,
@@ -113,6 +118,14 @@ pub fn run_job(
                 embedding: embedding.clone(),
             };
             client.insert_chunk(&row)?;
+            persist_chunk_extraction(
+                client,
+                embedder,
+                provider,
+                &req.namespace,
+                chunk_id,
+                &chunk.text,
+            )?;
         }
         Ok(chunks.len())
     })();
@@ -131,6 +144,69 @@ pub fn run_job(
             Err(e)
         }
     }
+}
+
+/// Extract entities + relationships from one chunk and persist them.
+///
+/// SC-013. Per-chunk `name_to_id` maps entity names to resolved UUIDs so
+/// relationships emitted in the same extraction call can cross-reference
+/// entities even though `fuzzy_match_entity` only sees committed canonical
+/// state. Relationships whose `src_name` or `dst_name` aren't in the local
+/// map are dangling references and silently dropped.
+fn persist_chunk_extraction(
+    client: &mut dyn PgClient,
+    embedder: &dyn EmbeddingBackend,
+    provider: &dyn LlmProvider,
+    namespace: &str,
+    chunk_id: Uuid,
+    chunk_text: &str,
+) -> CoreResult<()> {
+    let extraction = provider.extract(chunk_text, namespace)?;
+    let mut name_to_id: HashMap<String, Uuid> = HashMap::new();
+
+    for ent in &extraction.entities {
+        // Embed the entity name (single-element batch).
+        let name_emb_vec = embedder.embed_batch(&[ent.name.as_str()])?;
+        let name_emb = name_emb_vec
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::InvalidConfig("entity-name embed returned empty".into()))?;
+        let entity_id = resolve_or_insert_entity(
+            client,
+            namespace,
+            &ent.name,
+            ent.kind.as_deref(),
+            name_emb,
+            ent.description.clone(),
+        )?;
+        name_to_id.insert(ent.name.clone(), entity_id);
+
+        client.insert_chunk_entity(&ChunkEntityRow {
+            chunk_id,
+            entity_id,
+            confidence: ent.confidence,
+        })?;
+    }
+
+    for rel in &extraction.relationships {
+        let Some(&src) = name_to_id.get(&rel.src_name) else {
+            continue; // dangling reference -> drop
+        };
+        let Some(&dst) = name_to_id.get(&rel.dst_name) else {
+            continue;
+        };
+        client.insert_relationship(&RelRow {
+            id: Uuid::new_v4(),
+            namespace: namespace.to_string(),
+            src_id: src,
+            dst_id: dst,
+            kind: rel.kind.clone(),
+            weight: rel.weight,
+            description: None,
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Read source bytes from the `IngestSource` variant.

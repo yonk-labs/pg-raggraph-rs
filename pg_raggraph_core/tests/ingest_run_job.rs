@@ -73,6 +73,125 @@ fn run_job_rolls_back_on_chunk_write_failure() {
 }
 
 #[test]
+fn run_job_persists_entities_and_relationships_from_provider() {
+    // SC-013: provider returns 2 entities + 1 rel; run_job persists them
+    // via resolve_or_insert_entity + insert_chunk_entity + insert_relationship.
+    use pg_raggraph_core::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
+
+    struct StaticExtractor;
+    impl LlmProvider for StaticExtractor {
+        fn extract(&self, _t: &str, _ns: &str) -> pg_raggraph_core::CoreResult<Extraction> {
+            Ok(Extraction {
+                entities: vec![
+                    ExtractedEntity {
+                        name: "Alice".into(),
+                        kind: Some("person".into()),
+                        description: None,
+                        confidence: 0.95,
+                    },
+                    ExtractedEntity {
+                        name: "Acme Corp".into(),
+                        kind: Some("organization".into()),
+                        description: None,
+                        confidence: 0.92,
+                    },
+                ],
+                relationships: vec![ExtractedRelationship {
+                    src_name: "Alice".into(),
+                    dst_name: "Acme Corp".into(),
+                    kind: "works_at".into(),
+                    weight: 1.0,
+                    confidence: 0.9,
+                }],
+            })
+        }
+    }
+
+    let mut client = FakePgClient::default();
+    let embedder = DeterministicEmbedder::new(384);
+    let provider = StaticExtractor;
+    let req = IngestRequest {
+        source: IngestSource::Text {
+            name: "alice-doc".into(),
+            content: "Alice works at Acme Corp. They build widgets.".into(),
+        },
+        namespace: "default".into(),
+        chunk_strategy: "auto".into(),
+    };
+
+    let _outcome = run_job(&mut client, &req, &embedder, &provider).unwrap();
+
+    // After commit: 2 entities + 1 relationship in canonical state.
+    assert_eq!(
+        client.entities.len(),
+        2,
+        "expected 2 entities, got {}",
+        client.entities.len()
+    );
+    assert_eq!(
+        client.relationships.len(),
+        1,
+        "expected 1 relationship, got {}",
+        client.relationships.len()
+    );
+    assert_eq!(client.relationships[0].kind, "works_at");
+    assert!(
+        client.chunk_entities.len() >= 2,
+        "expected >=2 chunk_entity links"
+    );
+}
+
+#[test]
+fn run_job_drops_dangling_relationships() {
+    // If the LLM hallucinates a relationship where src_name or dst_name
+    // wasn't in the entities[] list, run_job drops the relationship rather
+    // than failing.
+    use pg_raggraph_core::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
+
+    struct DanglingExtractor;
+    impl LlmProvider for DanglingExtractor {
+        fn extract(&self, _t: &str, _ns: &str) -> pg_raggraph_core::CoreResult<Extraction> {
+            Ok(Extraction {
+                entities: vec![ExtractedEntity {
+                    name: "Alice".into(),
+                    kind: None,
+                    description: None,
+                    confidence: 0.9,
+                }],
+                relationships: vec![ExtractedRelationship {
+                    src_name: "Alice".into(),
+                    dst_name: "Bob".into(), // not in entities[]
+                    kind: "knows".into(),
+                    weight: 1.0,
+                    confidence: 0.5,
+                }],
+            })
+        }
+    }
+
+    let mut client = FakePgClient::default();
+    let embedder = DeterministicEmbedder::new(384);
+    let provider = DanglingExtractor;
+    let req = IngestRequest {
+        source: IngestSource::Text {
+            name: "dangling-doc".into(),
+            content: "Alice exists.".into(),
+        },
+        namespace: "default".into(),
+        chunk_strategy: "auto".into(),
+    };
+
+    run_job(&mut client, &req, &embedder, &provider).unwrap();
+
+    assert_eq!(client.entities.len(), 1);
+    assert_eq!(
+        client.relationships.len(),
+        0,
+        "dangling relationship to Bob must be dropped"
+    );
+}
+
+#[test]
 fn run_job_uses_mock_provider_no_network() {
     let mut client = FakePgClient::new();
     let req = IngestRequest {
