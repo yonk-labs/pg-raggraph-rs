@@ -16,6 +16,7 @@
 pub mod anthropic;
 pub mod http;
 pub mod mock;
+pub mod ollama;
 pub mod openai;
 pub mod retry;
 
