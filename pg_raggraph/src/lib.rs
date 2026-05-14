@@ -1825,10 +1825,7 @@ mod tests {
             !stored.contains("PLAINTEXT"),
             "plaintext leaked into encrypted column: {stored}"
         );
-        assert!(
-            !stored.contains("9876543210"),
-            "plaintext leaked: {stored}"
-        );
+        assert!(!stored.contains("9876543210"), "plaintext leaked: {stored}");
     }
 
     /// SC-004: `provider_list` must redact uniformly regardless of whether the
@@ -1864,8 +1861,7 @@ mod tests {
     fn master_key_path_unset_fires_startup_warning() {
         // _PG_init has already run for this backend. If the test harness boots
         // without master_key_path pre-set (the default), the sentinel is true.
-        let fired = crate::MASTER_KEY_WARNING_FIRED
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let fired = crate::MASTER_KEY_WARNING_FIRED.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
             fired,
             "WARNING for unset master_key_path was not emitted at _PG_init"
@@ -1898,6 +1894,48 @@ mod tests {
             "encrypted column leaks plaintext: {copied}"
         );
         assert!(!copied.contains("XYZ"), "leak: {copied}");
+    }
+
+    #[pg_test]
+    fn master_key_path_with_0644_perms_fails_provider_create() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&[0u8; 32]).unwrap();
+        // 0644: world-readable. Must be rejected.
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let path = f.path().to_string_lossy().into_owned();
+        let _ = f.into_temp_path().keep().unwrap();
+
+        Spi::run(&format!("SET pg_raggraph.master_key_path = '{path}'")).unwrap();
+
+        // Expect provider_create to ERROR out because load_master_key rejects 0644.
+        let res = std::panic::catch_unwind(|| {
+            Spi::run(
+                "SELECT pgrg.provider_create('badperm-p', 'llm', 'openai', NULL, 'gpt-4o', 'sk-x', '{}')",
+            ).unwrap();
+        });
+        assert!(
+            res.is_err(),
+            "0644 master key file must cause provider_create to error"
+        );
+    }
+
+    #[pg_test]
+    fn master_key_path_with_0600_perms_succeeds() {
+        let key = [0xAAu8; 32];
+        let path = write_master_key_file(&key);
+        Spi::run(&format!("SET pg_raggraph.master_key_path = '{path}'")).unwrap();
+
+        Spi::run(
+            "SELECT pgrg.provider_create('goodperm-p', 'llm', 'openai', NULL, 'gpt-4o', 'sk-x', '{}')",
+        )
+        .unwrap();
+
+        let n: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.providers WHERE name = 'goodperm-p'").unwrap();
+        assert_eq!(n, Some(1));
     }
 }
 
