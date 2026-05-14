@@ -77,3 +77,30 @@ fn maps_400_to_permanent_llm_error() {
     let msg = format!("{err}");
     assert!(msg.starts_with("llm error"), "got: {msg}");
 }
+
+#[test]
+fn complete_returns_text_and_usage() {
+    let mut srv = mockito::Server::new();
+    let body = serde_json::json!({
+        "id": "chatcmpl-test-complete",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "The answer is [1]."
+            }
+        }],
+        "usage": {"prompt_tokens": 42, "completion_tokens": 7, "total_tokens": 49}
+    });
+    let _m = srv
+        .mock("POST", "/v1/chat/completions")
+        .match_header("authorization", "Bearer sk-test")
+        .with_status(200)
+        .with_body(body.to_string())
+        .create();
+
+    let provider = OpenAiProvider::new("sk-test", "gpt-4o-mini", srv.url());
+    let r = provider.complete("Question?").unwrap();
+    assert_eq!(r.text, "The answer is [1].");
+    assert_eq!(r.prompt_tokens, 42);
+    assert_eq!(r.completion_tokens, 7);
+}

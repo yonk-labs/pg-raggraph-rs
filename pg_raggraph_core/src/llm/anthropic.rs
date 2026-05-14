@@ -13,7 +13,7 @@
 
 use crate::error::{CoreError, CoreResult};
 use crate::llm::http::{HttpClassification, HttpClient};
-use crate::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
+use crate::llm::{Completion, ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
 
 const EXTRACTION_TOOL_NAME: &str = "extract_graph";
 
@@ -105,6 +105,57 @@ impl LlmProvider for AnthropicProvider {
             HttpClassification::Ok => {}
         }
         parse_response(&resp_body)
+    }
+
+    fn complete(&self, prompt: &str) -> CoreResult<Completion> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 4096,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        });
+        let url = format!("{}/v1/messages", self.base_url);
+        let headers: &[(&str, &str)] = &[
+            ("x-api-key", self.api_key.as_str()),
+            ("anthropic-version", "2023-06-01"),
+        ];
+        let (status, resp_body) = self.http.post_json_with_headers(&url, headers, &body)?;
+        match HttpClassification::from_status(status) {
+            HttpClassification::Retryable => {
+                return Err(CoreError::Http(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Permanent => {
+                return Err(CoreError::Llm(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Ok => {}
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&resp_body).map_err(|e| CoreError::Llm(format!("parse: {e}")))?;
+        // Anthropic returns content as an array of blocks; for free-text
+        // completion the first text block carries the answer.
+        let content = v["content"]
+            .as_array()
+            .ok_or_else(|| CoreError::Llm("response missing content[]".into()))?;
+        let text_block = content
+            .iter()
+            .find(|b| b["type"].as_str() == Some("text"))
+            .ok_or_else(|| CoreError::Llm("no text block in content[]".into()))?;
+        let text = text_block["text"]
+            .as_str()
+            .ok_or_else(|| CoreError::Llm("text block missing .text".into()))?
+            .to_string();
+        // Token counts are bounded by what the provider reports; u64 -> u32
+        // truncation is acceptable (no real model will report > 2^32 tokens).
+        #[allow(clippy::cast_possible_truncation)]
+        let prompt_tokens = v["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let completion_tokens = v["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+        Ok(Completion {
+            text,
+            prompt_tokens,
+            completion_tokens,
+        })
     }
 }
 

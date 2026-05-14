@@ -46,3 +46,26 @@ fn maps_500_to_retryable_http_error() {
     let err = provider.extract("x", "default").expect_err("500");
     assert!(format!("{err}").starts_with("http error"));
 }
+
+#[test]
+fn complete_returns_text_and_usage() {
+    let mut srv = mockito::Server::new();
+    let body = serde_json::json!({
+        "model": "llama3:8b",
+        "response": "The answer is [1].",
+        "done": true,
+        "prompt_eval_count": 28,
+        "eval_count": 9
+    });
+    let _m = srv
+        .mock("POST", "/api/generate")
+        .with_status(200)
+        .with_body(body.to_string())
+        .create();
+
+    let provider = OllamaProvider::new("llama3:8b", srv.url());
+    let r = provider.complete("Question?").unwrap();
+    assert_eq!(r.text, "The answer is [1].");
+    assert_eq!(r.prompt_tokens, 28);
+    assert_eq!(r.completion_tokens, 9);
+}

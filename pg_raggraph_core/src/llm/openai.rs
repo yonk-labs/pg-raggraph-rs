@@ -12,7 +12,7 @@
 
 use crate::error::{CoreError, CoreResult};
 use crate::llm::http::{HttpClassification, HttpClient};
-use crate::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
+use crate::llm::{Completion, ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
 
 const EXTRACTION_SYSTEM_PROMPT: &str = include_str!("prompts/extraction_system.txt");
 
@@ -60,6 +60,43 @@ impl LlmProvider for OpenAiProvider {
             HttpClassification::Ok => {}
         }
         parse_response(&body)
+    }
+
+    fn complete(&self, prompt: &str) -> CoreResult<Completion> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        });
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let (status, resp_body) = self.http.post_json(&url, Some(&self.api_key), &body)?;
+        match HttpClassification::from_status(status) {
+            HttpClassification::Retryable => {
+                return Err(CoreError::Http(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Permanent => {
+                return Err(CoreError::Llm(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Ok => {}
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&resp_body).map_err(|e| CoreError::Llm(format!("parse: {e}")))?;
+        let text = v["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| CoreError::Llm("no choices[0].message.content".into()))?
+            .to_string();
+        // Token counts are bounded by what the provider reports; u64 -> u32
+        // truncation is acceptable (no real model will report > 2^32 tokens).
+        #[allow(clippy::cast_possible_truncation)]
+        let prompt_tokens = v["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let completion_tokens = v["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
+        Ok(Completion {
+            text,
+            prompt_tokens,
+            completion_tokens,
+        })
     }
 }
 

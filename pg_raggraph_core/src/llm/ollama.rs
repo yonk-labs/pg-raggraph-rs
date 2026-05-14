@@ -11,7 +11,7 @@
 
 use crate::error::{CoreError, CoreResult};
 use crate::llm::http::{HttpClassification, HttpClient};
-use crate::llm::{ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
+use crate::llm::{Completion, ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider};
 
 const EXTRACTION_SYSTEM_PROMPT: &str = include_str!("prompts/extraction_system.txt");
 
@@ -54,6 +54,42 @@ impl LlmProvider for OllamaProvider {
             HttpClassification::Ok => {}
         }
         parse_response(&resp_body)
+    }
+
+    fn complete(&self, prompt: &str) -> CoreResult<Completion> {
+        let body = serde_json::json!({
+            "model":  self.model,
+            "prompt": prompt,
+            "stream": false
+        });
+        let url = format!("{}/api/generate", self.base_url);
+        let (status, resp_body) = self.http.post_json(&url, None, &body)?;
+        match HttpClassification::from_status(status) {
+            HttpClassification::Retryable => {
+                return Err(CoreError::Http(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Permanent => {
+                return Err(CoreError::Llm(format!("status {status}: {resp_body}")));
+            }
+            HttpClassification::Ok => {}
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&resp_body).map_err(|e| CoreError::Llm(format!("parse: {e}")))?;
+        let text = v["response"]
+            .as_str()
+            .ok_or_else(|| CoreError::Llm("response missing .response".into()))?
+            .to_string();
+        // Token counts are bounded by what the provider reports; u64 -> u32
+        // truncation is acceptable (no real model will report > 2^32 tokens).
+        #[allow(clippy::cast_possible_truncation)]
+        let prompt_tokens = v["prompt_eval_count"].as_u64().unwrap_or(0) as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let completion_tokens = v["eval_count"].as_u64().unwrap_or(0) as u32;
+        Ok(Completion {
+            text,
+            prompt_tokens,
+            completion_tokens,
+        })
     }
 }
 

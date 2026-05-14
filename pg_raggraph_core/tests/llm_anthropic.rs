@@ -56,3 +56,31 @@ fn maps_529_overloaded_to_retryable_http_error() {
     let err = provider.extract("x", "default").expect_err("529");
     assert!(format!("{err}").starts_with("http error"), "got {err:?}");
 }
+
+#[test]
+fn complete_returns_text_and_usage() {
+    let mut srv = mockito::Server::new();
+    let body = serde_json::json!({
+        "id": "msg_test_complete",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "The answer is [1]."}
+        ],
+        "model": "claude-3-5-haiku",
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 35, "output_tokens": 11}
+    });
+    let _m = srv
+        .mock("POST", "/v1/messages")
+        .match_header("x-api-key", "sk-ant-test")
+        .with_status(200)
+        .with_body(body.to_string())
+        .create();
+
+    let provider = AnthropicProvider::new("sk-ant-test", "claude-3-5-haiku", srv.url());
+    let r = provider.complete("Question?").unwrap();
+    assert_eq!(r.text, "The answer is [1].");
+    assert_eq!(r.prompt_tokens, 35);
+    assert_eq!(r.completion_tokens, 11);
+}
