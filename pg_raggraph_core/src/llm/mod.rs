@@ -55,6 +55,16 @@ pub struct Extraction {
     pub relationships: Vec<ExtractedRelationship>,
 }
 
+/// Free-text completion response. Used by `ask()` for grounded answers.
+/// `prompt_tokens` / `completion_tokens` are 0 when the provider doesn't
+/// report usage (e.g., `MockProvider`, or providers with limited telemetry).
+#[derive(Debug, Clone, Default)]
+pub struct Completion {
+    pub text: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+}
+
 /// LLM provider trait. Plan 3 defines the surface; Plan 4 ships impls.
 ///
 /// Trait is object-safe (no generics) so the bg worker can hold a
@@ -69,4 +79,22 @@ pub trait LlmProvider: Send + Sync + 'static {
     /// Returns `CoreError` if the underlying provider call fails. `MockProvider`
     /// never errors.
     fn extract(&self, chunk_text: &str, namespace: &str) -> CoreResult<Extraction>;
+
+    /// Generate a free-text completion for `prompt`. Used by `ask()` for
+    /// grounded answers.
+    ///
+    /// The default implementation returns an error. Providers that support
+    /// free-text generation should override (real `OpenAi`/`Anthropic`/`Ollama`
+    /// providers do so in Task 15b). `MockProvider` overrides for tests that
+    /// don't need real LLM behavior.
+    ///
+    /// # Errors
+    /// Default impl returns `CoreError::Llm("complete() not implemented for this provider")`.
+    /// Real impls return `CoreError::Http` on transient transport errors and
+    /// `CoreError::Llm` on permanent errors (matching `extract()` mapping).
+    fn complete(&self, _prompt: &str) -> CoreResult<Completion> {
+        Err(crate::error::CoreError::Llm(
+            "complete() not implemented for this provider".into(),
+        ))
+    }
 }
