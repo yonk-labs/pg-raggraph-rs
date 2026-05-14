@@ -1782,6 +1782,123 @@ mod tests {
             "master_key_path GUC must be Suset (pg_settings.context = 'superuser')"
         );
     }
+
+    /// Write a 32-byte master key to a temp file with 0600 permissions and
+    /// return the absolute path. The temp file is leaked (persisted on disk)
+    /// for the test duration so the PG backend can re-read it across SPI calls.
+    fn write_master_key_file(bytes: &[u8; 32]) -> String {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        f.write_all(bytes).unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let p = f.path().to_string_lossy().into_owned();
+        // Persist (keep the path) so PG can read the file for the test duration.
+        let _ = f.into_temp_path().keep().unwrap();
+        p
+    }
+
+    /// SC-003: when `master_key_path` is set, `provider_create` must store the
+    /// credential encrypted (`enc:v1:` prefix) — never as plaintext.
+    #[pg_test]
+    fn provider_create_encrypts_credential_when_master_key_set() {
+        let key = [0xCDu8; 32];
+        let path = write_master_key_file(&key);
+        Spi::run(&format!("SET pg_raggraph.master_key_path = '{path}'")).unwrap();
+
+        Spi::run(
+            "SELECT pgrg.provider_create('enc-p', 'llm', 'openai', \
+                                          'https://api.openai.com', 'gpt-4o', \
+                                          'sk-test-PLAINTEXT-9876543210', '{}')",
+        )
+        .unwrap();
+
+        // Read the raw row, not provider_list (which redacts).
+        let stored: Option<String> =
+            Spi::get_one("SELECT credential FROM pgrg.providers WHERE name = 'enc-p'").unwrap();
+        let stored = stored.expect("credential column should be non-NULL");
+        assert!(
+            stored.starts_with("enc:v1:"),
+            "expected enc:v1: prefix, got {stored:?}"
+        );
+        assert!(
+            !stored.contains("PLAINTEXT"),
+            "plaintext leaked into encrypted column: {stored}"
+        );
+        assert!(
+            !stored.contains("9876543210"),
+            "plaintext leaked: {stored}"
+        );
+    }
+
+    /// SC-004: `provider_list` must redact uniformly regardless of whether the
+    /// stored credential is encrypted or plaintext. Here we exercise the
+    /// plaintext path (master_key_path RESET to unset).
+    #[pg_test]
+    fn provider_list_redacts_encrypted_and_plaintext_uniformly() {
+        // Plaintext path (no master key set for this test).
+        Spi::run("RESET pg_raggraph.master_key_path").unwrap();
+        Spi::run(
+            "SELECT pgrg.provider_create('plain-p', 'llm', 'openai', \
+                                          NULL, 'gpt-4o', 'sk-plain-secret-AAA', '{}')",
+        )
+        .unwrap();
+
+        let json: pgrx::JsonB = Spi::get_one("SELECT pgrg.provider_list()")
+            .unwrap()
+            .expect("provider_list");
+        let arr = json.0.as_array().unwrap();
+        let plain_obj = arr
+            .iter()
+            .find(|o| o["name"] == "plain-p")
+            .expect("plain-p row missing");
+        let cred = plain_obj["credential"].as_str().unwrap();
+        assert!(cred.starts_with("sk-"), "expected prefix, got {cred}");
+        assert!(cred.contains("***"), "expected redaction, got {cred}");
+        assert!(!cred.contains("secret"), "plaintext body leaked: {cred}");
+    }
+
+    /// SC-005: when `master_key_path` is unset at `_PG_init`, the WARNING must
+    /// fire. The test-only `MASTER_KEY_WARNING_FIRED` sentinel records this.
+    #[pg_test]
+    fn master_key_path_unset_fires_startup_warning() {
+        // _PG_init has already run for this backend. If the test harness boots
+        // without master_key_path pre-set (the default), the sentinel is true.
+        let fired = crate::MASTER_KEY_WARNING_FIRED
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            fired,
+            "WARNING for unset master_key_path was not emitted at _PG_init"
+        );
+    }
+
+    /// SC-015: simulate a `pg_dump` read of the raw `credential` column for an
+    /// encrypted row. The plaintext secret must not appear anywhere in the dump.
+    #[pg_test]
+    fn pg_dump_does_not_contain_plaintext_credential() {
+        let key = [0xEFu8; 32];
+        let path = write_master_key_file(&key);
+        Spi::run(&format!("SET pg_raggraph.master_key_path = '{path}'")).unwrap();
+
+        let secret = "sk-pgdump-secret-XYZ-ABC-12345";
+        Spi::run(&format!(
+            "SELECT pgrg.provider_create('dump-p', 'llm', 'openai', NULL, 'gpt-4o', '{secret}', '{{}}')"
+        ))
+        .unwrap();
+
+        // pg_dump simulator: read the raw column as text. SC-015 contract is
+        // that plaintext does not appear in this value.
+        let copied: Option<String> = Spi::get_one(
+            "SELECT string_agg(credential, ',') FROM pgrg.providers WHERE name='dump-p'",
+        )
+        .unwrap();
+        let copied = copied.unwrap_or_default();
+        assert!(
+            !copied.contains(secret),
+            "encrypted column leaks plaintext: {copied}"
+        );
+        assert!(!copied.contains("XYZ"), "leak: {copied}");
+    }
 }
 
 #[cfg(test)]

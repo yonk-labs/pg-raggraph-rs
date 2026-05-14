@@ -16,7 +16,7 @@ path = "./src/bin/pgrx_embed.rs"
 default = ["pg17"]
 pg17 = ["pgrx/pg17", "pgrx-tests/pg17"]
 pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
-pg_test = []
+pg_test = ["dep:tempfile"]
 
 [dependencies]
 pgrx = { workspace = true }
@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 pgrx-tests = { workspace = true }
