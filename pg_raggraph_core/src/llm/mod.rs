@@ -20,9 +20,11 @@ pub mod mock;
 pub mod ollama;
 pub mod openai;
 pub mod prompt;
+pub mod resolve;
 pub mod retry;
 
 pub use mock::MockProvider;
+pub use prompt::Citation;
 
 use crate::error::CoreResult;
 use serde::{Deserialize, Serialize};
