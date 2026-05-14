@@ -56,3 +56,32 @@ fn mock_provider_extract_still_empty_after_stub_answer() {
     assert!(r.entities.is_empty());
     assert!(r.relationships.is_empty());
 }
+
+#[test]
+fn mock_provider_extract_returns_stub_extraction() {
+    use pg_raggraph_core::llm::{
+        ExtractedEntity, ExtractedRelationship, Extraction, LlmProvider, MockProvider,
+    };
+
+    let stub = Extraction {
+        entities: vec![ExtractedEntity {
+            name: "Alice".into(),
+            kind: Some("person".into()),
+            description: None,
+            confidence: 0.9,
+        }],
+        relationships: vec![ExtractedRelationship {
+            src_name: "Alice".into(),
+            dst_name: "Acme".into(),
+            kind: "works_at".into(),
+            weight: 1.0,
+            confidence: 0.9,
+        }],
+    };
+    let p = MockProvider::default().with_stub_extraction(stub);
+    let r = p.extract("anything", "default").unwrap();
+    assert_eq!(r.entities.len(), 1);
+    assert_eq!(r.entities[0].name, "Alice");
+    assert_eq!(r.relationships.len(), 1);
+    assert_eq!(r.relationships[0].kind, "works_at");
+}

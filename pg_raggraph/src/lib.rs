@@ -2148,6 +2148,82 @@ mod tests {
             "completion_tokens must be a u64"
         );
     }
+
+    #[pg_test]
+    fn ingest_with_mock_extractor_creates_entities_and_relationship() {
+        // SC-013: extraction pipeline produces entities + relationships.
+        // Uses the 'mock-extractor' provider kind (T24): the stub
+        // `Extraction` is encoded as JSON in the `credential` column;
+        // `provider_factory::build_provider_impl` parses it and injects
+        // it into MockProvider::with_stub_extraction. No network.
+        //
+        // pgrx test MVCC isolation prevents the bg-worker queue from
+        // seeing test rows, so we drive `_core::ingest::run::run_job`
+        // directly via SpiPgClient — the same path the bg worker takes
+        // (`pg_raggraph/src/bgw/worker.rs::run_one`). The provider used
+        // here comes from `provider_factory::resolve_or_default_provider`,
+        // which resolves the namespace's `llm_provider` and constructs
+        // the MockProvider via the new "mock-extractor" arm.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+
+        let extraction = serde_json::json!({
+            "entities": [
+                {"name": "Alice", "kind": "person", "confidence": 0.95},
+                {"name": "Acme Corp", "kind": "organization", "confidence": 0.92}
+            ],
+            "relationships": [
+                {"src_name": "Alice", "dst_name": "Acme Corp", "kind": "works_at",
+                 "weight": 1.0, "confidence": 0.9}
+            ]
+        })
+        .to_string();
+
+        // Single-quote-escape for SQL literal.
+        let credential_sql = extraction.replace('\'', "''");
+
+        Spi::run(&format!(
+            "SELECT pgrg.provider_create('mock-ext-p', 'llm', 'mock-extractor', \
+             NULL, 'v1', '{credential_sql}', '{{}}')"
+        ))
+        .unwrap();
+
+        // Namespace with this provider as default. resolve_or_default_provider
+        // reads namespace.llm_provider.
+        Spi::run("SELECT pgrg.namespace_create('ns-ext', 'bge-small-en-v1.5', 'mock-ext-p', '{}')")
+            .unwrap();
+
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = crate::provider_factory::resolve_or_default_provider("ns-ext");
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        let req = IngestRequest {
+            source: IngestSource::Text {
+                name: "doc-ext".into(),
+                content: "Alice works at Acme Corp.".into(),
+            },
+            namespace: "ns-ext".into(),
+            chunk_strategy: "auto".into(),
+        };
+        run_job(&mut client, &req, &embedder, &*provider).expect("run_job ok");
+
+        // SC-013: >=2 entities and exactly 1 'works_at' relationship.
+        let entities: Option<i64> =
+            Spi::get_one("SELECT count(*)::bigint FROM pgrg.entities WHERE namespace = 'ns-ext'")
+                .unwrap();
+        assert!(
+            entities.unwrap_or(0) >= 2,
+            "expected >=2 entities, got {entities:?}"
+        );
+
+        let rels: Option<i64> = Spi::get_one(
+            "SELECT count(*)::bigint FROM pgrg.relationships WHERE namespace = 'ns-ext' \
+             AND kind = 'works_at'",
+        )
+        .unwrap();
+        assert_eq!(rels, Some(1));
+    }
 }
 
 #[cfg(test)]

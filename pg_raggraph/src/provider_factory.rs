@@ -131,6 +131,21 @@ pub(crate) fn build_provider_impl(name: &str) -> Box<dyn LlmProvider> {
         "mock" => Box::new(
             pg_raggraph_core::llm::MockProvider::default().with_stub_answer(plaintext_cred),
         ),
+        "mock-extractor" => {
+            // Test-only provider kind: parse the credential as a JSON
+            // `Extraction` and inject it into `MockProvider`. Used by SC-013
+            // pgrx E2E tests (T24) to exercise the extraction path
+            // deterministically without LLM network calls.
+            let parsed: pg_raggraph_core::llm::Extraction = serde_json::from_str(&plaintext_cred)
+                .unwrap_or_else(|e| {
+                    ereport!(
+                        ERROR,
+                        PgSqlErrorCode::ERRCODE_INVALID_PARAMETER_VALUE,
+                        format!("mock-extractor credential must be JSON Extraction: {e}")
+                    );
+                });
+            Box::new(pg_raggraph_core::llm::MockProvider::default().with_stub_extraction(parsed))
+        }
         other => {
             ereport!(
                 ERROR,
