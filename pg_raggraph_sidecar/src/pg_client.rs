@@ -75,6 +75,20 @@ impl TokioPgClient {
         Self { client, handle }
     }
 
+    /// Consume the client, returning the owned tokio-postgres `Client` and the
+    /// runtime `Handle`. Used by `jobloop::process_one` to drive the explicit
+    /// transaction boundary (`BEGIN`/`COMMIT`/`ROLLBACK`) and the queue status
+    /// `UPDATE` on the SAME connection `run_job`'s INSERTs used — a Postgres
+    /// transaction is per-connection, and [`TokioPgClient::commit`]/[`TokioPgClient::rollback`]
+    /// are intentional DC-006 no-ops (the real boundary lives in the job loop,
+    /// mirroring how `SpiPgClient` relies on pgrx's transaction wrapper).
+    /// Without this, the per-job transaction cannot be committed on the
+    /// connection that wrote the rows (SC-004 atomicity).
+    #[must_use]
+    pub fn into_parts(self) -> (Client, Handle) {
+        (self.client, self.handle)
+    }
+
     /// Wrap a driver error into the same `CoreError` variant `SpiPgClient`
     /// uses (`CoreError::InvalidConfig`). tokio-postgres errors do not carry
     /// connection strings, but keep it credential-free regardless.
