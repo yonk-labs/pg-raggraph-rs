@@ -17,6 +17,7 @@ use pg_raggraph_core::ingest::pg_client::{
 use pg_raggraph_core::{CoreError, CoreResult};
 use tokio::runtime::Handle;
 use tokio_postgres::Client;
+use uuid::Uuid;
 
 /// Build a pgvector text literal of the form `[v1,v2,...]`.
 ///
@@ -39,6 +40,24 @@ fn vector_literal(v: &[f32]) -> String {
     }
     s.push(']');
     s
+}
+
+/// Parse a pgvector text literal of the form `[v1,v2,...]` back into a
+/// `Vec<f32>`. Returns `None` on malformed input.
+///
+/// Byte-identical to `SpiPgClient::parse_vector_literal` (DC-001). Used by
+/// `fuzzy_match_entity` to round-trip `name_emb::text` back into a `Vec<f32>`.
+fn parse_vector_literal(s: &str) -> Option<Vec<f32>> {
+    let t = s.trim();
+    let inner = t.strip_prefix('[').and_then(|x| x.strip_suffix(']'))?;
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in inner.split(',') {
+        out.push(part.trim().parse::<f32>().ok()?);
+    }
+    Some(out)
 }
 
 /// tokio-postgres adapter. Stateless w.r.t. the ingest pipeline — every method
@@ -133,33 +152,127 @@ impl PgClient for TokioPgClient {
         })
     }
 
-    fn insert_entity(&mut self, _row: &EntityRow) -> CoreResult<()> {
-        // SAFETY: Task 9b replaces this before any caller (jobloop) exists; no
-        // runtime path reaches it in T9.
-        unimplemented!("Task 9b: insert_entity")
+    fn insert_entity(&mut self, row: &EntityRow) -> CoreResult<()> {
+        // Build the SQL with optional embedding inlined as a pgvector literal,
+        // byte-identical to SpiPgClient (DC-001): pgvector has no native
+        // tokio-postgres binding, so cast from a `'[..]'::vector` string.
+        let emb_sql = match &row.name_emb {
+            Some(v) => format!("'{}'::vector", vector_literal(v)),
+            None => "NULL".to_string(),
+        };
+        let sql = format!(
+            "INSERT INTO pgrg.entities (id, namespace, name, kind, name_emb, description) \
+             VALUES ($1, $2, $3, $4, {emb_sql}, $5) \
+             ON CONFLICT (namespace, name, kind) DO NOTHING"
+        );
+        self.handle.block_on(async {
+            self.client
+                .execute(
+                    &sql,
+                    &[
+                        &row.id,
+                        &row.namespace,
+                        &row.name,
+                        &row.kind,
+                        &row.description,
+                    ],
+                )
+                .await
+                .map_err(|e| Self::map_err("spi insert entity", e))?;
+            Ok(())
+        })
     }
 
-    fn insert_relationship(&mut self, _row: &RelRow) -> CoreResult<()> {
-        // SAFETY: Task 9b replaces this before any caller (jobloop) exists; no
-        // runtime path reaches it in T9.
-        unimplemented!("Task 9b: insert_relationship")
+    fn insert_relationship(&mut self, row: &RelRow) -> CoreResult<()> {
+        let weight = f64::from(row.weight);
+        self.handle.block_on(async {
+            self.client
+                .execute(
+                    "INSERT INTO pgrg.relationships \
+                       (id, namespace, src_id, dst_id, kind, weight, description) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                     ON CONFLICT (namespace, src_id, dst_id, kind) DO NOTHING",
+                    &[
+                        &row.id,
+                        &row.namespace,
+                        &row.src_id,
+                        &row.dst_id,
+                        &row.kind,
+                        &weight,
+                        &row.description,
+                    ],
+                )
+                .await
+                .map_err(|e| Self::map_err("spi insert relationship", e))?;
+            Ok(())
+        })
     }
 
-    fn insert_chunk_entity(&mut self, _row: &ChunkEntityRow) -> CoreResult<()> {
-        // SAFETY: Task 9b replaces this before any caller (jobloop) exists; no
-        // runtime path reaches it in T9.
-        unimplemented!("Task 9b: insert_chunk_entity")
+    fn insert_chunk_entity(&mut self, row: &ChunkEntityRow) -> CoreResult<()> {
+        let confidence = f64::from(row.confidence);
+        self.handle.block_on(async {
+            self.client
+                .execute(
+                    "INSERT INTO pgrg.chunk_entities (chunk_id, entity_id, confidence) \
+                     VALUES ($1, $2, $3) \
+                     ON CONFLICT (chunk_id, entity_id) DO NOTHING",
+                    &[&row.chunk_id, &row.entity_id, &confidence],
+                )
+                .await
+                .map_err(|e| Self::map_err("spi insert chunk_entity", e))?;
+            Ok(())
+        })
     }
 
     fn fuzzy_match_entity(
         &mut self,
-        _namespace: &str,
-        _name: &str,
-        _limit: usize,
+        namespace: &str,
+        name: &str,
+        limit: usize,
     ) -> CoreResult<Vec<EntityCandidate>> {
-        // SAFETY: Task 9b replaces this before any caller (jobloop) exists; no
-        // runtime path reaches it in T9.
-        unimplemented!("Task 9b: fuzzy_match_entity")
+        // pg_trgm `similarity()` returns float4 in [0, 1]. We deliberately
+        // do NOT filter by GUC `pg_trgm.similarity_threshold` here — T21's
+        // resolver applies its own cosine threshold on `name_emb`.
+        let lim = i64::try_from(limit)
+            .map_err(|_| CoreError::InvalidConfig("fuzzy_match_entity: limit too large".into()))?;
+        self.handle.block_on(async {
+            let rows = self
+                .client
+                .query(
+                    "SELECT id, name, similarity(name, $2) AS sim, name_emb::text \
+                     FROM pgrg.entities \
+                     WHERE namespace = $1 \
+                     ORDER BY sim DESC \
+                     LIMIT $3",
+                    &[&namespace, &name, &lim],
+                )
+                .await
+                .map_err(|e| Self::map_err("spi fuzzy_match_entity", e))?;
+            let mut out: Vec<EntityCandidate> = Vec::with_capacity(rows.len());
+            for r in rows {
+                let id: Uuid = r
+                    .try_get::<_, Uuid>(0)
+                    .map_err(|e| Self::map_err("spi fuzzy id", e))?;
+                let nm: String = r
+                    .try_get::<_, String>(1)
+                    .map_err(|e| Self::map_err("spi fuzzy name", e))?;
+                let sim: f32 = r
+                    .try_get::<_, Option<f32>>(2)
+                    .map_err(|e| Self::map_err("spi fuzzy sim", e))?
+                    .unwrap_or(0.0);
+                let emb_text: Option<String> = r
+                    .try_get::<_, Option<String>>(3)
+                    .map_err(|e| Self::map_err("spi fuzzy emb", e))?;
+                let name_emb = emb_text.and_then(|t| parse_vector_literal(&t));
+                out.push(EntityCandidate {
+                    id,
+                    name: nm,
+                    trgm_similarity: sim,
+                    name_emb,
+                });
+            }
+            Ok(out)
+        })
     }
 
     fn rollback(&mut self) -> CoreResult<()> {
