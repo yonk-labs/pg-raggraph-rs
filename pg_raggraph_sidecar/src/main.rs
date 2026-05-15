@@ -1,16 +1,25 @@
 //! pg-raggraph-sidecar — standalone binary for cloud-managed `PostgreSQL`.
-//!
-//! Real startup wiring lands in Plan 5 Task 4. This entry point exists so the
-//! binary compiles and `--help` is functional.
 
-use clap::Parser;
 use pg_raggraph_sidecar::config::SidecarConfig;
+use pg_raggraph_sidecar::db::redact_conn_string;
 
-fn main() {
-    let _config = SidecarConfig::parse();
-    eprintln!(
-        "pg-raggraph-sidecar v{}: not yet implemented (Plan 5 Task 4)",
-        env!("CARGO_PKG_VERSION")
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    let cfg = SidecarConfig::parse_from(std::env::args_os());
+    tracing::info!(
+        db = %redact_conn_string(&cfg.database_url),
+        http_bind = %cfg.http_bind,
+        workers = cfg.bgw_workers,
+        "pg-raggraph-sidecar starting"
     );
-    std::process::exit(64); // EX_USAGE — not yet implemented
+
+    // Slice 2+ fills in: bootstrap().await?; then tokio::join!(jobloop, http_server).
+    // For Slice 1 the binary validates config + logs + exits 0 so SC-001 is met.
+    Ok(())
 }
