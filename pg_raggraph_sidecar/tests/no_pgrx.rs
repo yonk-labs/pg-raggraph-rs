@@ -1,6 +1,6 @@
 //! SC-008: the sidecar must have ZERO pgrx in its dependency tree, or it
 //! cannot deploy on managed PG. This test shells out to `cargo tree` and
-//! asserts no pgrx-family crate is reachable from pg_raggraph_sidecar.
+//! asserts no pgrx-family crate is reachable from `pg_raggraph_sidecar`.
 
 use std::process::Command;
 

@@ -1,4 +1,4 @@
-//! pg-raggraph-sidecar — standalone binary for cloud-managed PostgreSQL.
+//! pg-raggraph-sidecar — standalone binary for cloud-managed `PostgreSQL`.
 //!
 //! Real implementation lands in Plan 5. This crate exists in Plan 1 only so
 //! the workspace builds end-to-end.
