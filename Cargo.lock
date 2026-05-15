@@ -2897,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "pg_raggraph_core",
  "pgrx",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph_core"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "pg_raggraph_sidecar"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "pg_raggraph_core",
  "tracing",
