@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.0-alpha.4] — 2026-05-15
+
+Plan 4: LLM extraction + `pgrg.ask`.
+
+### Added
+- AES-256-GCM credential encryption (`enc:v1:<nonce>:<ciphertext>`) when `pg_raggraph.master_key_path` is set; transparent decrypt at use site (Plan 4, SC-003)
+- Master key file 0600 permission check — rejects group/world-readable key files (Plan 4, SC-006)
+- Startup WARNING when `master_key_path` is unset (plaintext-fallback honesty) (Plan 4, SC-005)
+- Real `OpenAiProvider`, `AnthropicProvider`, `OllamaProvider` — HTTP-cassette tested, no live network in CI (Plan 4, SC-001)
+- `RetryingProvider` — 3 retries, 1s/2s/4s backoff, 10s wall-clock cap; retries 429/5xx, fails fast on 4xx (Plan 4, SC-002)
+- `pgrg.ask(q, filter, top_k, namespace, hops, llm_provider)` — grounded answer with `[N]` citations resolved to chunk_ids (Plan 4, SC-009)
+- Numbered-citation prompt builder — LLM never sees raw chunk_ids; citation forgery impossible by construction (Plan 4, SC-010)
+- Token budget per namespace (`namespaces.settings.ask_token_budget`, default 4000) (Plan 4, SC-012)
+- Provider resolution chain: explicit → namespace default → first LLM provider → error (Plan 4, SC-011)
+- Entity resolution at ingestion (pg_trgm + cosine on name embeddings) wired into `run_job` (Plan 4, SC-014 — see Known limitations)
+- Real LLM extraction in the bg worker (replaces Plan 3 MockProvider; resolved per-job) (Plan 4, SC-013)
+- `signals.llm` cost/latency attribution on `pgrg.ask` (Plan 4, SC-018)
+
+### Fixed (folded Plan 1 deferred concerns)
+- `redact()` UTF-8 panic-safety — regression-locked (Plan 1 deferred, SC-008)
+- `pg_raggraph.master_key_path` GUC context confirmed `Suset` — regression-locked (Plan 1 deferred, SC-007)
+
+### Known limitations / carry-forward
+- SC-014 entity-resolution is validated for the decision logic (unit) and the real-pg_trgm + cross-document merge pipeline (E2E), but the cosine-with-real-semantic-embeddings leg is deferred: the deterministic test embedder (SHA-256, non-semantic) cannot exercise it. Full punctuation-variant validation requires the Plan 3 ONNX-embedder carry-forward.
+- Bg-worker queue dispatch is not exercised by pgrx tests (transaction/MVCC isolation); the in-process pipeline is tested via direct `run_job` dispatch, and the queue/launcher is covered by Plan 3 tests.
+- `mock` / `mock-extractor` provider kinds are reachable from production SQL (same risk profile as before); production hardening could feature-gate them.
+
+### Constraint notes
+- `LlmProvider` trait extended with `complete()` (default errors; real providers + MockProvider override) — pre-approved trait-shape change.
+
 ## [0.1.0-alpha.3] — 2026-05-11
 
 ### Added
