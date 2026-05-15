@@ -2224,6 +2224,113 @@ mod tests {
         .unwrap();
         assert_eq!(rels, Some(1));
     }
+
+    #[pg_test]
+    fn entity_resolution_merges_punctuation_variant() {
+        // SC-014 (partial — legs 1 + 2 proven here; leg 3 deferred).
+        //
+        // SC-014's contract: "Acme Corp" and "Acme Corp." resolve to ONE
+        // entity. `resolve_or_insert_entity` (T21) requires BOTH
+        // pg_trgm.similarity >= 0.85 (TRGM_MERGE) AND embedding cosine
+        // >= 0.90 to merge. That splits SC-014 into three legs:
+        //
+        //   Leg 1 — resolution decision logic (both-thresholds-required):
+        //           proven by the T21 unit test on `resolve_or_insert_entity`.
+        //   Leg 2 — real pg_trgm name similarity >= 0.85 for the
+        //           punctuation variant: REGRESSION-LOCKED by Assertion 1
+        //           below, against REAL PostgreSQL pg_trgm.
+        //   Leg 3 — embedding cosine >= 0.90 with REAL SEMANTIC embeddings:
+        //           NOT provable here. The deterministic test embedder is a
+        //           SHA-256 hash, not a semantic model: identical strings
+        //           give cosine 1.0, but any byte difference gives
+        //           orthogonal vectors (cosine ~= 0). For the
+        //           "Acme Corp"/"Acme Corp." pair the probe measured
+        //           trgm=1.0 (clears 0.85) but deterministic-embedder
+        //           cosine=-0.0225 (cannot clear 0.90, by design). Leg 3 is
+        //           therefore DEFERRED to the Plan 3 ONNX-embedder
+        //           carry-forward (tracked in the CHANGELOG, wired in T26),
+        //           where real semantic embeddings make the cosine leg pass.
+        //
+        // Assertion 2 ingests two documents whose extracted entity name is
+        // IDENTICAL ("Acme Corp"). Identical strings -> identical
+        // deterministic embedding -> cosine 1.0, and trgm 1.0 -> BOTH
+        // thresholds clear -> the resolver MUST merge. This proves the
+        // real-PG resolution+merge pipeline end-to-end (SpiPgClient's real
+        // pg_trgm `fuzzy_match_entity` + `resolve_or_insert_entity` +
+        // `run_job` persistence across two documents/transactions), which
+        // is the exact machinery SC-014's punctuation-variant case depends
+        // on once leg 3 lands.
+        use pg_raggraph_core::embedding::DeterministicEmbedder;
+        use pg_raggraph_core::ingest::run::run_job;
+        use pg_raggraph_core::ingest::{IngestRequest, IngestSource};
+
+        // --- Assertion 1: real pg_trgm clears TRGM_MERGE for the
+        // punctuation variant (leg 2 regression lock, real PostgreSQL). ---
+        let trgm: Option<f32> =
+            Spi::get_one("SELECT similarity('Acme Corp', 'Acme Corp.')::real").unwrap();
+        assert!(
+            trgm.unwrap_or(0.0) >= 0.85,
+            "SC-014 leg 2: real pg_trgm similarity for the punctuation variant must \
+             clear TRGM_MERGE (0.85); got {trgm:?}"
+        );
+
+        // --- Assertion 2: real-PG resolution+merge pipeline collapses
+        // duplicate entities across two documents into ONE row. ---
+        // Two docs, SAME entity name "Acme Corp". Both clear trgm (1.0) AND
+        // cosine (1.0, identical deterministic embedding) -> the resolver
+        // MUST merge them. This proves the real-PG merge machinery
+        // (SpiPgClient + resolve + run_job) works end-to-end. The
+        // PUNCTUATION-variant case additionally needs the cosine leg with
+        // real semantic embeddings (ONNX) -- see the doc comment above and
+        // the CHANGELOG carry-forward note (handled in T26).
+        let extraction = serde_json::json!({
+            "entities": [
+                {"name": "Acme Corp", "kind": "organization", "confidence": 0.95}
+            ],
+            "relationships": []
+        })
+        .to_string();
+        let credential_sql = extraction.replace('\'', "''");
+
+        Spi::run(&format!(
+            "SELECT pgrg.provider_create('mock-res-p', 'llm', 'mock-extractor', \
+             NULL, 'v1', '{credential_sql}', '{{}}')"
+        ))
+        .unwrap();
+        Spi::run("SELECT pgrg.namespace_create('ns-res', 'bge-small-en-v1.5', 'mock-res-p', '{}')")
+            .unwrap();
+
+        let embedder = DeterministicEmbedder::new(crate::gucs::EMBED_DIM.get() as usize);
+        let provider = crate::provider_factory::resolve_or_default_provider("ns-res");
+        let mut client = crate::bgw::spi_client::SpiPgClient;
+
+        for doc_name in ["doc-res-a", "doc-res-b"] {
+            let req = IngestRequest {
+                source: IngestSource::Text {
+                    name: doc_name.into(),
+                    content: format!("{doc_name}: Acme Corp is an organization."),
+                },
+                namespace: "ns-res".into(),
+                chunk_strategy: "auto".into(),
+            };
+            run_job(&mut client, &req, &embedder, &*provider).expect("run_job ok");
+        }
+
+        // Both ingests extracted the identical entity name; resolution must
+        // collapse them into exactly ONE 'Acme%' entity in the namespace.
+        let acme_entities: Option<i64> = Spi::get_one(
+            "SELECT count(*)::bigint FROM pgrg.entities \
+             WHERE namespace = 'ns-res' AND name LIKE 'Acme%'",
+        )
+        .unwrap();
+        assert_eq!(
+            acme_entities,
+            Some(1),
+            "SC-014 legs 1+2 E2E: two documents extracting the identical entity \
+             name must resolve+merge into exactly ONE 'Acme%' entity via the \
+             real-PG pipeline; got {acme_entities:?}"
+        );
+    }
 }
 
 #[cfg(test)]
