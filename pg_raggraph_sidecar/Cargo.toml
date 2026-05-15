@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "pg_raggraph_sidecar"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pg-raggraph-sidecar"
 path = "src/main.rs"
