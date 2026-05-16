@@ -1,0 +1,79 @@
+name: sidecar
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sidecar:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pgrg_sidecar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build sidecar (release)
+        run: cargo build --release -p pg_raggraph_sidecar
+
+      - name: smoke test --help (SC-001)
+        run: ./target/release/pg-raggraph-sidecar --help
+
+      - name: SC-008/DC-005 — pgrx-free guard
+        # Hard fail: pgrx in the sidecar dep tree breaks managed-PG deploys.
+        # Sidecar is the Supabase/Neon/RDS runtime; it must never pull pgrx.
+        run: |
+          cargo tree -p pg_raggraph_sidecar --edges normal | grep -i pgrx \
+            && (echo "FAIL: pgrx found in sidecar dep tree" && exit 1) \
+            || echo "PASS: sidecar is pgrx-free"
+
+      - name: install postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: create extensions in service DB
+        # Mirrors docker/pg-init/00-extensions.sql — only what a managed-PG
+        # user can do (vector + pg_trgm); pg_raggraph extension not created here.
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -p 5432 -U postgres -d pgrg_sidecar_test \
+            -c 'CREATE EXTENSION IF NOT EXISTS vector;' \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+
+      - name: cargo test sidecar (SC-015)
+        # DB-gated tests run against the service container (port 5432 in CI).
+        # PGRG_SUPABASE_TEST_DATABASE_URL is intentionally unset — the
+        # client_sql_pg_net test skips cleanly (SC-006 ⚠️ partial; that test
+        # is validated out-of-CI against a real managed-PG instance).
+        env:
+          PGRG_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/pgrg_sidecar_test
+        run: cargo test -p pg_raggraph_sidecar
+
+      - name: cargo clippy sidecar
+        run: cargo clippy -p pg_raggraph_sidecar --all-targets -- -D warnings
+
+      - name: cargo fmt check
+        run: cargo fmt --all -- --check
