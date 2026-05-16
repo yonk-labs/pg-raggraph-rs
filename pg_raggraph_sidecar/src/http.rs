@@ -21,15 +21,29 @@
 //! as the question text (the `bm` lane's `plainto_tsquery('english', $1)`
 //! still uses it).
 //!
-//! Errors here return a single sanitized HTTP 500 `{error, code:"internal"}`
-//! — no stack trace, no credential, no connection string. The rich
-//! 400/404/500 envelope matrix is Task 16.
+//! ## Error envelopes (SC-013, Task 16)
+//!
+//! All error responses use a uniform JSON shape:
+//! `{"error": "<short, sanitized message>", "code": "<variant>"}`.
+//!
+//! | Situation | HTTP | `code` |
+//! |---|---|---|
+//! | Malformed / invalid JSON body | 400 | `bad_request` |
+//! | Requested namespace not in `pgrg.namespaces` | 404 | `unknown_namespace` |
+//! | Any DB / embedding / provider / internal failure | 500 | `internal` |
+//!
+//! The HTTP 500 body is always the generic `"internal error"` string. The
+//! real cause is logged server-side at `warn` level with connection strings
+//! run through `db::redact_conn_string`. No stack trace, no credential, no
+//! `postgres://` URL, no master-key path ever reaches the response body.
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::async_trait;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -102,31 +116,94 @@ fn vector_literal(v: &[f32]) -> String {
     s
 }
 
-/// The sanitized error envelope. The `Display` of the source error is logged
-/// server-side at warn level and never returned to the client (no stack
-/// trace, no credential, no connection string). Task 16 expands this into a
-/// 400/404/500 matrix; Task 15 only needs the happy path + a single 500.
-struct AskError(anyhow::Error);
-
-impl<E: Into<anyhow::Error>> From<E> for AskError {
-    fn from(e: E) -> Self {
-        Self(e.into())
-    }
+/// Sanitized error envelope for `POST /v1/ask` (SC-013, Task 16).
+///
+/// Each variant maps to a distinct HTTP status code and `code` field in the
+/// response body. The response body NEVER contains a stack trace, a credential,
+/// a `postgres://` URL, the master-key path, or any `CoreError` Display text.
+/// Real causes are logged server-side at `warn`/`error` level, with any
+/// connection string run through `db::redact_conn_string`.
+enum AskError {
+    /// Malformed or invalid JSON body → 400 `bad_request`.
+    BadRequest(String),
+    /// The requested namespace does not exist in `pgrg.namespaces` → 404
+    /// `unknown_namespace`.
+    UnknownNamespace,
+    /// Any DB / embedding / provider / core failure → 500 `internal`.
+    /// The wrapped `anyhow::Error` is logged but never sent to the client.
+    Internal(anyhow::Error),
 }
 
 impl IntoResponse for AskError {
     fn into_response(self) -> Response {
-        // Log the real cause server-side only. redact_conn_string defends
-        // the (unlikely) case the error text carries the DB URL.
-        tracing::warn!(
-            error = %db::redact_conn_string(&format!("{:#}", self.0)),
-            "POST /v1/ask failed"
-        );
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "internal error", "code": "internal" })),
-        )
-            .into_response()
+        match self {
+            Self::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": msg, "code": "bad_request" })),
+            )
+                .into_response(),
+
+            Self::UnknownNamespace => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "unknown namespace", "code": "unknown_namespace" })),
+            )
+                .into_response(),
+
+            Self::Internal(e) => {
+                // Log the real cause server-side only. redact_conn_string
+                // defends the (unlikely) case the error carries the DB URL.
+                tracing::warn!(
+                    error = %db::redact_conn_string(&format!("{e:#}")),
+                    "POST /v1/ask internal error"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "internal error", "code": "internal" })),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// Blanket conversion from any `anyhow`-compatible error into `Internal`.
+/// Used by `?` in the handler for DB / embedding / provider failures.
+impl<E: Into<anyhow::Error>> From<E> for AskError {
+    fn from(e: E) -> Self {
+        Self::Internal(e.into())
+    }
+}
+
+/// A custom extractor that wraps `axum::Json<T>` and converts `JsonRejection`
+/// (malformed body, wrong content-type, …) into `AskError::BadRequest` so
+/// the handler returns our sanitized envelope instead of axum's default
+/// plaintext / HTML rejection body.
+struct AskJson<T>(T);
+
+#[async_trait]
+impl<T, S> FromRequest<S> for AskJson<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = AskError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(v)) => Ok(AskJson(v)),
+            Err(rejection) => {
+                let msg = match &rejection {
+                    JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => {
+                        "invalid JSON body".to_string()
+                    }
+                    JsonRejection::MissingJsonContentType(_) => {
+                        "content-type must be application/json".to_string()
+                    }
+                    _ => "bad request".to_string(),
+                };
+                Err(AskError::BadRequest(msg))
+            }
+        }
     }
 }
 
@@ -158,55 +235,34 @@ fn retrieval_sql(query_embedding: &[f32]) -> anyhow::Result<String> {
     ))
 }
 
-/// `POST /v1/ask` — parity with pgrx `pgrg.ask`.
-async fn ask_handler(
-    State(state): State<AppState>,
-    Json(body): Json<AskBody>,
-) -> Result<Json<serde_json::Value>, AskError> {
-    let cfg = &state.cfg;
-    let master_key_path = cfg.master_key_path.as_deref();
-
-    // Request-scoped connection.
-    let client = db::connect(&cfg.database_url).await?;
-
-    // 1) Resolve provider: explicit -> namespace default -> first LLM match.
-    //    Reuse Task 14's provider_factory unchanged.
-    let provider = match body.llm_provider.as_deref() {
-        Some(name) => provider_factory::build_provider_impl(&client, name, master_key_path).await?,
-        None => {
-            provider_factory::resolve_or_default_provider(&client, &body.namespace, master_key_path)
-                .await
-        }
-    };
-
-    // Provider name + model for `signals.llm.*` attribution. Mirrors pgrx
-    // ask.rs which reads the resolved name + `provider_model_for`. We
-    // re-resolve the name the same way the factory does (explicit ->
-    // namespace default -> first LLM) so attribution is faithful even
-    // through the MockProvider fallback path.
-    let provider_name = resolve_provider_name(&client, &body).await;
-    let provider_model: String = client
-        .query_opt(
-            "SELECT model FROM pgrg.providers WHERE name = $1",
-            &[&provider_name],
+/// Verify the namespace exists in `pgrg.namespaces`; return `UnknownNamespace`
+/// if absent. Extracted to keep `ask_handler` within the line budget.
+async fn check_namespace(client: &tokio_postgres::Client, namespace: &str) -> Result<(), AskError> {
+    let exists: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pgrg.namespaces WHERE name = $1)",
+            &[&namespace],
         )
         .await
-        .ok()
-        .flatten()
-        .and_then(|r| r.try_get::<_, Option<String>>(0).ok().flatten())
-        .unwrap_or_default();
+        .map_err(|e| AskError::Internal(e.into()))?
+        .get(0);
+    if exists {
+        Ok(())
+    } else {
+        Err(AskError::UnknownNamespace)
+    }
+}
 
-    // 2) Retrieval. Embed the question in Rust (the SPI-vs-tokio-postgres
-    //    delta — see module docs), then run the parity retrieval SQL.
-    let q_emb = state.embedder.embed(&body.q)?;
-    let sql = retrieval_sql(&q_emb)?;
-
+/// Run the retrieval SQL and map rows into `PromptChunk`s.
+async fn retrieve_chunks(
+    client: &tokio_postgres::Client,
+    body: &AskBody,
+    query_embedding: &[f32],
+) -> Result<Vec<PromptChunk>, AskError> {
+    let sql = retrieval_sql(query_embedding)?;
     // build_query_sql binds: $1 q, $2 filter jsonb, $3 top_k, $4 namespace,
-    // $5 hops, $6 vec_weight, $7 bm25_weight, $8 graph_weight. Weights are
-    // the parity defaults (all 1.0 — RrfWeights::default()). `$3` is used
-    // as `LIMIT $3`, which Postgres types as `bigint`; SPI (pgrx) coerces
-    // i32 transparently but tokio-postgres binds by exact type, so `top_k`
-    // is widened to i64 for the bind.
+    // $5 hops, $6 vec_weight, $7 bm25_weight, $8 graph_weight. `$3` is
+    // `LIMIT $3` (bigint in PG); widen top_k from i32 → i64 for the bind.
     let top_k_i64 = i64::from(body.top_k);
     let rows = client
         .query(
@@ -223,8 +279,7 @@ async fn ask_handler(
             ],
         )
         .await?;
-
-    let chunks: Vec<PromptChunk> = rows
+    Ok(rows
         .iter()
         .map(|r| PromptChunk {
             chunk_id: r.try_get::<_, Uuid>(0).unwrap_or_else(|_| Uuid::nil()),
@@ -233,10 +288,55 @@ async fn ask_handler(
             text: r.try_get::<_, String>(3).unwrap_or_default(),
             token_count: r.try_get::<_, i32>(4).unwrap_or(0),
         })
-        .collect();
+        .collect())
+}
+
+/// `POST /v1/ask` — parity with pgrx `pgrg.ask`.
+///
+/// Uses the custom `AskJson` extractor so malformed bodies return a sanitized
+/// 400 JSON envelope rather than axum's default plaintext rejection.
+async fn ask_handler(
+    State(state): State<AppState>,
+    AskJson(body): AskJson<AskBody>,
+) -> Result<Json<serde_json::Value>, AskError> {
+    let cfg = &state.cfg;
+    let master_key_path = cfg.master_key_path.as_deref();
+
+    // Request-scoped connection.
+    let client = db::connect(&cfg.database_url).await?;
+
+    // Namespace existence check → 404 if absent.
+    check_namespace(&client, &body.namespace).await?;
+
+    // 1) Resolve provider: explicit -> namespace default -> first LLM match.
+    //    Reuse Task 14's provider_factory unchanged.
+    let provider = match body.llm_provider.as_deref() {
+        Some(name) => provider_factory::build_provider_impl(&client, name, master_key_path).await?,
+        None => {
+            provider_factory::resolve_or_default_provider(&client, &body.namespace, master_key_path)
+                .await
+        }
+    };
+
+    // Provider name + model for `signals.llm.*` attribution.
+    let provider_name = resolve_provider_name(&client, &body).await;
+    let provider_model: String = client
+        .query_opt(
+            "SELECT model FROM pgrg.providers WHERE name = $1",
+            &[&provider_name],
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| r.try_get::<_, Option<String>>(0).ok().flatten())
+        .unwrap_or_default();
+
+    // 2) Embed the question in Rust (SPI-vs-tokio-postgres delta — see module
+    //    docs) and run the parity retrieval SQL.
+    let q_emb = state.embedder.embed(&body.q)?;
+    let chunks = retrieve_chunks(&client, &body, &q_emb).await?;
 
     if chunks.is_empty() {
-        // Same empty-context shape pgrx ask.rs returns.
         return Ok(Json(json!({
             "answer": "No relevant context found.",
             "citations": [],
@@ -245,8 +345,7 @@ async fn ask_handler(
         })));
     }
 
-    // 3) Token budget from namespace settings (default 4000) — SC-012,
-    //    EXACT pgrx ask.rs query.
+    // 3) Token budget from namespace settings (default 4000) — SC-012.
     let budget: i32 = client
         .query_opt(
             "SELECT (settings->>'ask_token_budget')::int FROM pgrg.namespaces WHERE name = $1",
@@ -258,7 +357,7 @@ async fn ask_handler(
         .and_then(|r| r.try_get::<_, Option<i32>>(0).ok().flatten())
         .unwrap_or(4000);
 
-    // 4) Orchestrate via _core::llm::ask::ask() — UNCHANGED.
+    // 4) Orchestrate via _core::llm::ask::ask().
     let req = AskRequest {
         question: body.q.clone(),
         chunks,
@@ -268,8 +367,7 @@ async fn ask_handler(
     };
     let out = core_ask(&req, provider.as_ref())?;
 
-    // 5) Serialize with the SAME shape pgrx ask.rs returns: citations =
-    //    array of {chunk_id, document_id, ord} (the `n` field is dropped).
+    // 5) Parity shape: citations = [{chunk_id, document_id, ord}].
     let citations: Vec<serde_json::Value> = out
         .citations
         .iter()
@@ -353,4 +451,65 @@ pub async fn serve(cfg: Arc<SidecarConfig>) -> anyhow::Result<()> {
     tracing::info!(http_bind = %cfg.http_bind, "HTTP server listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse as _;
+
+    use super::AskError;
+
+    /// Unit test (no DB required): `AskError::Internal` always produces HTTP
+    /// 500 with the sanitized `{error:"internal error",code:"internal"}` body.
+    /// Asserts the body does NOT contain `postgres://`, `password`, the
+    /// master-key path, or any `CoreError` Display text (SC-013, DC-002).
+    #[tokio::test]
+    async fn internal_error_500_envelope_is_sanitized() {
+        // Simulate an internal failure whose Display contains sensitive text.
+        let sensitive = "postgres://user:s3cr3t@localhost:5443/db: connection refused";
+        let err = AskError::Internal(anyhow::anyhow!("{sensitive}"));
+        let response = err.into_response();
+
+        assert_eq!(
+            response.status().as_u16(),
+            500,
+            "AskError::Internal must yield HTTP 500"
+        );
+
+        let body_bytes = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("read body bytes");
+        let body_str = std::str::from_utf8(&body_bytes).expect("body is UTF-8");
+        let v: serde_json::Value = serde_json::from_str(body_str).expect("body is valid JSON");
+
+        assert_eq!(
+            v["code"].as_str(),
+            Some("internal"),
+            "code must be 'internal': {body_str}"
+        );
+        assert_eq!(
+            v["error"].as_str(),
+            Some("internal error"),
+            "error field must be the generic sentinel, not the real cause: {body_str}"
+        );
+
+        // The sensitive text MUST NOT appear in the response body (DC-002).
+        assert!(
+            !body_str.contains("postgres://"),
+            "response must not contain 'postgres://': {body_str}"
+        );
+        assert!(
+            !body_str.contains("password"),
+            "response must not contain 'password': {body_str}"
+        );
+        assert!(
+            !body_str.contains("s3cr3t"),
+            "response must not contain the test password: {body_str}"
+        );
+        assert!(
+            !body_str.contains("connection refused"),
+            "response must not contain the real error cause: {body_str}"
+        );
+    }
 }
