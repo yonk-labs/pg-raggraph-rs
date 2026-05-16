@@ -7,7 +7,7 @@ use pg_raggraph_core::embedding::EmbeddingBackend;
 use pg_raggraph_sidecar::config::SidecarConfig;
 use pg_raggraph_sidecar::db::redact_conn_string;
 use pg_raggraph_sidecar::jobloop::{Backoff, ProcessOutcome, process_one, spawn_reaper};
-use pg_raggraph_sidecar::{bootstrap, db, embedder};
+use pg_raggraph_sidecar::{bootstrap, db, embedder, http};
 
 /// One ingest worker task: poll `process_one` forever. An empty queue backs
 /// off (1→5→…→30s); a processed job resets the backoff; a transient error is
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cfg = SidecarConfig::parse_from(std::env::args_os());
+    let cfg = Arc::new(SidecarConfig::parse_from(std::env::args_os()));
     tracing::info!(
         db = %redact_conn_string(&cfg.database_url),
         http_bind = %cfg.http_bind,
@@ -73,8 +73,18 @@ async fn main() -> anyhow::Result<()> {
     // Crashed-job reaper (SC-009).
     let _reaper = spawn_reaper(cfg.database_url.clone(), cfg.job_reaper_interval_secs);
 
-    // Workers + reaper are detached tasks; process exit stops them. v1 is a
-    // clean ctrl_c exit — no drain protocol (out of scope).
+    // HTTP server (`POST /v1/ask`) alongside the worker pool + reaper. Like
+    // them it is a detached task; process exit stops it. A bind/serve
+    // failure is logged, never fatal — the worker pool keeps draining.
+    let cfg_http = Arc::clone(&cfg);
+    tokio::spawn(async move {
+        if let Err(e) = http::serve(cfg_http).await {
+            tracing::error!("http server: {e}");
+        }
+    });
+
+    // Workers + reaper + HTTP are detached tasks; process exit stops them.
+    // v1 is a clean ctrl_c exit — no drain protocol (out of scope).
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutdown");
     Ok(())
