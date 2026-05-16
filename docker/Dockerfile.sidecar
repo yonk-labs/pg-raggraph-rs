@@ -1,0 +1,63 @@
+# pg-raggraph sidecar — managed-PG runtime (SC-012).
+#
+# The sidecar runs the ingest + ask pipeline as a standalone process against
+# cloud-managed PostgreSQL (RDS / Cloud SQL / Supabase / Neon) where
+# shared_preload_libraries cannot be set. ZERO pgrx in the tree (SC-008),
+# so this is a plain Rust binary with no Postgres backend linkage.
+#
+# Dependency footprint: reqwest uses rustls and tokio-postgres speaks
+# libpq-wire over NoTls. But pg_raggraph_core pulls chunkshop-rs/fastembed
+# (→ ort/onnxruntime, hf-hub, native-tls) transitively, which adds two
+# native linkages the slim images lack out of the box:
+#   - openssl-sys (via native-tls)  → build: pkg-config + libssl-dev;
+#                                      runtime: libssl3
+#   - ort/onnxruntime C++ runtime   → build: g++ (provides -lstdc++);
+#                                      runtime: libstdc++6
+# All build deps stay in the builder stage; only the two runtime shared
+# libs are installed in the final image.
+
+# ── builder ────────────────────────────────────────────────────────────────
+# Pinned to the workspace toolchain (rust-toolchain.toml channel = "1.89",
+# rust-version = "1.89").
+FROM rust:1.89-slim AS builder
+WORKDIR /build
+
+# Minimal native build deps (see header note): pkg-config + libssl-dev for
+# openssl-sys; g++ for the ort/onnxruntime C++ runtime link (-lstdc++).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the whole workspace. The sidecar's bootstrap include_str!s the shared
+# pg_raggraph/sql/* files, so the sibling crates must be present even though
+# only pg_raggraph_sidecar is built.
+COPY . .
+
+# Release build of the sidecar binary only. No default features pull pgrx.
+RUN cargo build --release -p pg_raggraph_sidecar
+
+# ── runtime ────────────────────────────────────────────────────────────────
+FROM debian:stable-slim AS runtime
+
+# Runtime shared libs the binary dynamically links (see header note):
+#   - libssl3        → libssl.so.3 + libcrypto.so.3 (openssl-sys)
+#   - libstdc++6     → libstdc++.so.6 (ort/onnxruntime C++ runtime)
+# Without these the process will not start. libgcc_s.so.1 ships in the
+# debian base. ca-certificates lets outbound TLS validate certs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         libssl3 libstdc++6 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root runtime user.
+RUN useradd --system --create-home --shell /usr/sbin/nologin nonroot
+
+COPY --from=builder /build/target/release/pg-raggraph-sidecar /usr/local/bin/pg-raggraph-sidecar
+
+USER nonroot
+
+# Default POST /v1/ask bind port (PGRG_HTTP_BIND default 0.0.0.0:8410).
+# Documentation only — does not publish the port.
+EXPOSE 8410
+
+ENTRYPOINT ["/usr/local/bin/pg-raggraph-sidecar"]
