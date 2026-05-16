@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.0-alpha.5] — 2026-05-16
+
+Plan 5: Sidecar binary for managed PostgreSQL.
+
+### Added
+- Standalone `pg_raggraph_sidecar` binary — runs GraphRAG against managed PostgreSQL (RDS, Cloud SQL, Supabase, Neon) with no `shared_preload_libraries` access (Plan 5, SC-001)
+- First-connect idempotent SQL bootstrap — creates all `pgrg.*` tables; embedded migrations are byte-identical to the in-extension migration files (Plan 5, SC-002/SC-003, DC-003)
+- libpq job loop — polls `pgrg.ingest_jobs` with `FOR UPDATE SKIP LOCKED`, processes each job exactly once across multiple sidecar instances (Plan 5, SC-004)
+- `POST /v1/ask` (axum) — JSON `{q, namespace, top_k}` → `{answer, citations, signals, mode_used}`; sanitized `400`/`404`/`500` error envelopes (no stack traces, no credentials) (Plan 5, SC-005/SC-013)
+- `pg_raggraph_sidecar/sql/client.sql` — PL/pgSQL `pgrg.ask` shim that POSTs to the sidecar via `pg_net`, signature-parity with the in-extension `pgrg.ask` (Plan 5, SC-006 — see Known limitations)
+- `TokioPgClient` — libpq mirror of `SpiPgClient` running verbatim SQL, zero pgrx (Plan 5, SC-008/SC-016, DC-005)
+- Crashed-sidecar reaper — re-queues jobs whose `updated_at` exceeds the reaper interval, max 3 attempts then `failed`; same semantics as the Plan 3 bg-worker reaper (Plan 5, SC-009)
+- Bounded empty-queue backoff — 1s → grow → cap → reset; does not hammer the DB when idle (Plan 5, SC-010)
+- AES-GCM credential interop — sidecar reads/writes `pgrg.providers` with the shared `_core` encryption module; in-extension path reads the same rows (Plan 5, SC-011)
+- `provider_factory` — provider resolution parity with the pgrx factory (Plan 5, SC-016)
+- Managed-PG E2E — full ingest → grounded ask against a stock `pgvector/pgvector:pg17` container with no preload config (Plan 5, SC-012 — the SC-008 thesis proof)
+- `docker/Dockerfile.sidecar` and `.github/workflows/sidecar.yml` — CI runs `cargo test -p pg_raggraph_sidecar` against a Docker PG on every push/PR (Plan 5, SC-015)
+
+### Known limitations / carry-forward
+- SC-006 ⚠️ partial: `client.sql` is code-complete, signature-parity-exact, installs on `supabase/postgres` pg_net 0.14.0, uses the non-deprecated `net._await_response` path — but the pg_net background-worker outbound HTTP round-trip is unvalidated in this sandbox (egress blocked). Validate on a real non-sandboxed managed-PG/Supabase instance.
+- SC-007 ⚠️ partial: `ingest_text`/`ingest_bytes`/`query`/`ask` have proven sidecar counterparts, but `pgrg.status`/`pgrg.health` are not surfaced in the v1 sidecar (no `GET /v1/status|/v1/health` route).
+- `docker/Dockerfile.sidecar` has no `.dockerignore` (`COPY . .` ships `target/` — works but slow/large build context).
+- Sidecar build needs `pkg-config libssl-dev g++` (builder) + `libssl3 libstdc++6 ca-certificates` (runtime) — `_core` pulls chunkshop/ort/onnxruntime/openssl.
+- Bg-worker-queue dispatch is not exercisable under pgrx test MVCC; the in-process `process_one` path is the tested one; queue/launcher is covered by Plan 3.
+
+### Constraint notes
+- Sync `PgClient` bridged to async `tokio-postgres` (`Handle::block_on` inside `spawn_blocking`).
+- Transaction boundary owned by the job loop — `TokioPgClient` commit/rollback are no-ops (DC-006).
+- Load-bearing `pgrg.embed($1)` → inline-vector substitution (managed PG lacks the pgrx fn) is regression-locked by the `parity_matrix` SQL-drift guard.
+- No HTTP auth and no in-sidecar TLS in v1 — private-network deployment assumption; reverse proxy required for TLS/auth.
+
 ## [0.1.0-alpha.4] — 2026-05-15
 
 Plan 4: LLM extraction + `pgrg.ask`.

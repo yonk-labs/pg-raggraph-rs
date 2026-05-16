@@ -63,6 +63,44 @@ CREATE EXTENSION pg_raggraph CASCADE;
 SELECT pgrg.health();
 ```
 
+## Sidecar (managed PostgreSQL)
+
+Cloud-managed PostgreSQL (RDS, Cloud SQL, Supabase, Neon) forbids
+`shared_preload_libraries`, so the extension can't load. The
+`pg_raggraph_sidecar` binary runs the same `_core` GraphRAG engine as an
+external process that talks to the database over plain libpq + HTTP — no
+pgrx, no SPI, no preload.
+
+```sql
+-- 1. On the managed DB (one-time, the only privileges you need):
+CREATE EXTENSION vector;
+CREATE EXTENSION pg_trgm;
+```
+
+```bash
+# 2. Run the sidecar — it bootstraps all pgrg.* tables on first connect:
+pg_raggraph_sidecar --database-url "$PGRG_DATABASE_URL" --http-bind 0.0.0.0:8080
+```
+
+```sql
+-- 3. Enqueue an ingest with plain SQL (no pgrx pgrg.ingest() in this mode):
+INSERT INTO pgrg.ingest_jobs (namespace, payload) VALUES ('default', 'hello world');
+-- ... or, for an in-SQL pgrg.ask() over pg_net, install the shim:
+--   \i pg_raggraph_sidecar/sql/client.sql   (requires pg_net)
+```
+
+```sql
+-- 4. Ask — over the pg_net SQL shim, or directly over HTTP:
+SELECT * FROM pgrg.ask('what changed in auth?');          -- via client.sql shim
+-- curl -s localhost:8080/v1/ask -d '{"q":"what changed in auth?"}'
+```
+
+Caveats (v1): **no HTTP auth** and **no in-sidecar TLS** — deploy on a
+private network behind a reverse proxy that terminates TLS. The `pg_net`
+shim needs a Supabase-flavored PostgreSQL (`pg_net` is not on stock
+images); validate the live `pg_net` egress path on your real managed-PG
+instance. The HTTP `/v1/ask` path has no such dependency.
+
 ## License
 
 Apache-2.0. See `LICENSE`.
