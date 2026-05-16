@@ -13,3 +13,25 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # Supabase-flavored Postgres: ships pg_net (+ pgvector + pg_trgm). Used only
+  # by the SC-006 client.sql / pg_net path (gated on
+  # PGRG_SUPABASE_TEST_DATABASE_URL). pg-stock above is untouched.
+  pg-supabase:
+    image: supabase/postgres:15.8.1.060
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pgrg_sidecar_test
+    ports: ["5444:5432"]
+    # pg_net's background worker issues HTTP from inside the container; the
+    # in-test sidecar binds on the host. host-gateway lets pg_net reach it
+    # via http://host.docker.internal:<port>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./docker/pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pgrg_sidecar_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
