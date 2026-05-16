@@ -1,0 +1,13 @@
+# Shared entity-resolution constants. Read by BOTH implementations:
+#   - Rust: pg_raggraph_core/build.rs reads this at compile time; drift vs the
+#     canonical Rust constants is a BUILD ERROR.
+#   - Python: pg-raggraph loads this at startup for parity runs.
+# Format is intentionally FLAT `key: value` so the Rust build.rs scanner needs
+# no yaml dependency. Do not nest. Do not add comments mid-value.
+# Values are byte-identical to pg_raggraph_core/src/ingest/resolve.rs as of
+# commit 4f5b960 (TRGM_MERGE=0.85, COSINE_MERGE=0.90). Changing a value here
+# is a deliberate cross-impl parity decision, never a silent edit.
+trgm_merge: 0.85
+cosine_merge: 0.90
+tie_break: trgm_similarity_desc
+name_canonicalization: none
