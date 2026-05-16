@@ -261,3 +261,99 @@ pub async fn process_one(
         }
     }
 }
+
+/// Result of one reaper sweep — counts from the requeue and fail UPDATE
+/// rowcounts. Mirrors the two statements in pgrx `bgw::reaper::run_reaper_sweep`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReapOutcome {
+    /// Rows re-queued (`status='running'` → `'queued'`, `attempt_count < 3`).
+    pub requeued: u64,
+    /// Rows terminalised (`status='running'` → `'failed'`, `attempt_count >= 3`).
+    pub failed: u64,
+}
+
+/// One reaper pass: recover **crashed-sidecar** jobs — rows stuck in
+/// `status='running'` whose `updated_at` is older than `interval_secs`
+/// because the sidecar process died mid-job and never reached `process_one`'s
+/// Ok/Err finaliser. This is EXCLUSIVELY crash recovery: `process_one`
+/// already terminalises a clean `run_job` error via the verbatim
+/// `queue.rs::fail_job` path, so the reaper must not (and does not) duplicate
+/// it. `'completed'`/`'failed'` rows and fresh (non-stale) `'running'` rows are
+/// untouched by the predicates.
+///
+/// The two UPDATE statements are **byte-identical** to pgrx
+/// `bgw::reaper::run_reaper_sweep` (DC-006): same `make_interval(secs :=
+/// $1::float8)` staleness form, same `attempt_count < 3` requeue cap and
+/// `attempt_count >= 3` fail cap, same SET clauses including the
+/// `COALESCE(error, '') || ' (reaper: max attempts reached)'` message. The
+/// interval is passed as the `$1` float8 bind (`interval_secs as f64`); pgrx
+/// passes the same value via `gucs::JOB_REAPER_INTERVAL_SECS.get().into()`.
+///
+/// # Errors
+/// Returns the tokio-postgres query error if either UPDATE fails.
+pub async fn reap_stale_jobs(client: &Client, interval_secs: i64) -> anyhow::Result<ReapOutcome> {
+    // i32::from is infallible; reaper intervals are small (seconds), so the
+    // i64 → i32 → f64 path is lossless and clippy-clean (no `as` cast).
+    let secs = f64::from(i32::try_from(interval_secs).unwrap_or(i32::MAX));
+
+    // bgw::reaper::run_reaper_sweep, requeue UPDATE (lines 14-21), byte-identical.
+    let requeued = client
+        .execute(
+            "UPDATE pgrg.ingest_jobs \
+                 SET status = 'queued', updated_at = now() \
+                 WHERE status = 'running' \
+                   AND updated_at < now() - make_interval(secs := $1::float8) \
+                   AND attempt_count < 3",
+            &[&secs],
+        )
+        .await?;
+
+    // bgw::reaper::run_reaper_sweep, fail-cap UPDATE (lines 24-35), byte-identical.
+    let failed = client
+        .execute(
+            "UPDATE pgrg.ingest_jobs \
+                 SET status = 'failed', \
+                     error = COALESCE(error, '') || ' (reaper: max attempts reached)', \
+                     finished_at = now(), \
+                     updated_at = now() \
+                 WHERE status = 'running' \
+                   AND updated_at < now() - make_interval(secs := $1::float8) \
+                   AND attempt_count >= 3",
+            &[&secs],
+        )
+        .await?;
+
+    Ok(ReapOutcome { requeued, failed })
+}
+
+/// Spawn the background reaper task. It loops a `tokio::time::interval` of
+/// `interval_secs`, opens its own control connection per tick (`db::connect`),
+/// and runs `reap_stale_jobs`. A transient connect/sweep error is logged and
+/// the loop continues — a reaper hiccup must never kill the sweep (SC-009).
+#[must_use]
+pub fn spawn_reaper(database_url: String, interval_secs: i64) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let period = Duration::from_secs(u64::try_from(interval_secs.max(1)).unwrap_or(1));
+        let mut ticker = tokio::time::interval(period);
+        loop {
+            ticker.tick().await;
+            match db::connect(&database_url).await {
+                Ok(client) => match reap_stale_jobs(&client, interval_secs).await {
+                    Ok(ReapOutcome { requeued, failed }) => {
+                        if requeued > 0 || failed > 0 {
+                            tracing::info!(
+                                requeued,
+                                failed,
+                                "reaper sweep: recovered crashed-sidecar jobs"
+                            );
+                        } else {
+                            tracing::debug!("reaper sweep: nothing stale");
+                        }
+                    }
+                    Err(e) => tracing::error!("reaper sweep failed: {e:?}"),
+                },
+                Err(e) => tracing::error!("reaper connect failed: {e:?}"),
+            }
+        }
+    })
+}
