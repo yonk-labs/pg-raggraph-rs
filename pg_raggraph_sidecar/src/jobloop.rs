@@ -19,6 +19,7 @@
 //!     Sidecar parity (DC-006) requires matching the worker exactly.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use pg_raggraph_core::embedding::EmbeddingBackend;
 use pg_raggraph_core::ingest::run::run_job;
@@ -29,6 +30,46 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::pg_client::TokioPgClient;
+
+/// Bounded poll backoff for an empty queue (SC-010). `next_delay()` yields
+/// 1s, 5s, then doubles up to a 30s cap; `reset()` (on a successful claim)
+/// returns to 1s. Pure — no DB, no time source; the caller sleeps.
+#[derive(Debug)]
+pub struct Backoff {
+    current_secs: u64,
+}
+
+impl Backoff {
+    /// Create a new backoff starting at 1s.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { current_secs: 1 }
+    }
+
+    /// Get the next delay duration and advance the backoff state.
+    /// Sequence: 1, 5, 10, 20, 30, 30, 30, …
+    pub fn next_delay(&mut self) -> Duration {
+        let delay = Duration::from_secs(self.current_secs);
+        // Advance: 1 → 5, then double up to 30s cap
+        self.current_secs = match self.current_secs {
+            1 => 5,
+            5 => 10,
+            _ => (self.current_secs * 2).min(30),
+        };
+        delay
+    }
+
+    /// Reset backoff to 1s. Called when a job is successfully claimed.
+    pub fn reset(&mut self) {
+        self.current_secs = 1;
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// One claimed job — the sidecar mirror of pgrx `queue::ClaimedJob`.
 #[derive(Debug, Clone)]
