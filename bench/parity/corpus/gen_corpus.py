@@ -43,7 +43,7 @@ def main():
     ap.add_argument("--tier", required=True, choices=list(TIERS))
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    with open(a.out, "w") as f:
+    with open(a.out, "w", encoding="utf-8", newline="\n") as f:
         for rec in gen(a.tier):
             f.write(json.dumps(rec) + "\n")
 

@@ -7,3 +7,7 @@ Cargo.lock.bak
 .vscode/
 .pgrx/
 skill-output/
+
+# Python (bench/parity generators + tests)
+__pycache__/
+*.pyc
