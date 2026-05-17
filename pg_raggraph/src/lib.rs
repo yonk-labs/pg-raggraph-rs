@@ -547,6 +547,60 @@ mod tests {
         assert_eq!(jobs, Some(0), "ingest_extracted must NOT enqueue jobs");
     }
 
+    #[pg_test]
+    fn sc002_parity_small_fixture_loads_via_real_loader() {
+        // SC-002: the SHIPPED bench/parity/extracted/small.jsonl loads cleanly
+        // through the real pgrg.ingest_extracted AFTER its provenance header
+        // (line 1) is stripped — the documented strip-before-load contract.
+        // Resolve from the workspace root regardless of the harness cwd:
+        // CARGO_MANIFEST_DIR is <repo>/pg_raggraph; the fixture lives at
+        // <repo>/bench/parity/extracted/small.jsonl.
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../bench/parity/extracted/small.jsonl"
+        );
+        let raw = std::fs::read_to_string(src)
+            .expect("parity small fixture must exist (run gen_extracted.py)");
+        let mut lines = raw.lines();
+        let header = lines.next().expect("fixture has a header line");
+        assert!(
+            header.contains("\"kind\":\"_header\"") || header.contains("\"kind\": \"_header\""),
+            "line 1 must be the SC-002 provenance _header"
+        );
+        let stripped = "/tmp/pgrg_parity_small_stripped.jsonl";
+        std::fs::write(stripped, lines.collect::<Vec<_>>().join("\n") + "\n")
+            .expect("write header-stripped copy");
+
+        Spi::run("SELECT pgrg.namespace_create('parity')").unwrap();
+        let n: Option<i64> = Spi::get_one(&format!(
+            "SELECT pgrg.ingest_extracted('{stripped}', 'parity')"
+        ))
+        .unwrap();
+        let n = n.expect("ingest_extracted returns a row count");
+        // 120 documents + 120 chunks + 120 entities + 120 chunk_entities +
+        // 4 relationships = 484 records read from the header-stripped file.
+        assert!(n > 360, "expected >360 records loaded (120*4 + rels), got {n}");
+
+        // Sanity: documents/chunks actually landed in the parity namespace.
+        let docs: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.documents WHERE namespace='parity'",
+        )
+        .unwrap();
+        assert_eq!(docs, Some(120), "120 documents expected");
+        let chunks: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.chunks WHERE namespace='parity'",
+        )
+        .unwrap();
+        assert_eq!(chunks, Some(120), "120 chunks expected");
+        // Entities dedupe via ON CONFLICT (namespace, name, kind) to the
+        // number of distinct topic words in the small corpus.
+        let ents: Option<i64> = Spi::get_one(
+            "SELECT count(*) FROM pgrg.entities WHERE namespace='parity'",
+        )
+        .unwrap();
+        assert!(ents.unwrap() >= 1, "topic entities expected (deduped)");
+    }
+
     fn load_minimal_fixture_for_query(ns: &str) {
         // Helper used by query tests: load 2 chunks, 1 entity, 1 chunk_entity.
         // UUIDs are derived from the namespace string so parallel tests do
