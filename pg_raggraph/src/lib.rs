@@ -333,6 +333,41 @@ mod tests {
     }
 
     #[pg_test]
+    fn sc012_parity_mode_guc_is_suset() {
+        // SC-012 / folded Plan 1 concern: pg_raggraph.parity_mode must be Suset,
+        // not Userset.
+        //
+        // PRIMARY assertion: pg_settings.context must be 'superuser' — this
+        // definitively proves GucContext::Suset registration regardless of session
+        // role mechanics.
+        let ctx: Option<String> = Spi::get_one(
+            "SELECT context FROM pg_settings WHERE name = 'pg_raggraph.parity_mode'",
+        )
+        .unwrap();
+        assert_eq!(ctx.as_deref(), Some("superuser"), "expected Suset context");
+
+        // SECONDARY (best-effort) assertion: a non-superuser SET must fail.
+        // pgrx converts PG errors into Rust panics, so we use catch_unwind.
+        // Mechanism note: a two-statement string ("SET ROLE …; SET guc…;") causes
+        // the PG error to propagate as a panic outside the SPI call site, not as
+        // Err — so we split the role switch and the GUC set into separate
+        // catch_unwind scopes to capture the panic reliably.
+        Spi::run("CREATE ROLE pgrg_parity_lowpriv NOLOGIN").unwrap();
+        Spi::run("SET ROLE pgrg_parity_lowpriv").unwrap();
+        let res = std::panic::catch_unwind(|| {
+            Spi::run("SET pg_raggraph.parity_mode = true").unwrap();
+        });
+        assert!(
+            res.is_err(),
+            "SC-012: non-superuser SET pg_raggraph.parity_mode must fail (Suset)"
+        );
+        // Reset role; pg_test harness runs in a fresh connection so cleanup is
+        // belt-and-suspenders only.
+        Spi::run("RESET ROLE").unwrap();
+        Spi::run("DROP ROLE IF EXISTS pgrg_parity_lowpriv").unwrap();
+    }
+
+    #[pg_test]
     fn ingest_jobs_payload_column_exists() {
         // Spec §5: ingest_jobs.payload bytea for ingest_text/ingest_bytes carriage.
         // Plan 1 schema declares this column; Plan 3 Task 1 locks the invariant
