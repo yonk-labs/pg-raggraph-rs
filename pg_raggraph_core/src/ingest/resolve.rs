@@ -11,6 +11,8 @@
 //! `crate::parity_constants`). Changing them requires updating the YAML and
 //! the canonical literals in `build.rs` in the same commit (drift = build error).
 
+use std::collections::HashMap;
+
 use uuid::Uuid;
 
 use crate::error::CoreResult;
@@ -79,6 +81,65 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     } else {
         dot / (na * nb)
     }
+}
+
+/// Deterministic name embedding for cross-impl resolution parity: a fixed,
+/// implementation-independent function (NOT a semantic embedding). Parity
+/// here is about the threshold/tie-break LOGIC being identical; both impls
+/// compute this same documented function. 8-dim suffices to separate groups.
+fn parity_name_vec(name: &str) -> Vec<f32> {
+    let norm = name.to_lowercase();
+    let mut v = vec![0.0_f32; 8];
+    for (i, b) in norm.bytes().enumerate() {
+        v[i % 8] += f32::from(b);
+    }
+    let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        for x in &mut v {
+            *x /= n;
+        }
+    }
+    v
+}
+
+/// Group entity-name variants into canonical ids using the SAME two-step as
+/// the production resolver (trgm >= `TRGM_MERGE` AND cosine >= `COSINE_MERGE`,
+/// candidates ordered by trigram similarity desc). Returns name -> canonical.
+///
+/// This is the cross-implementation parity entry point (SC-005): the Python
+/// sibling repo runs the identical YAML thresholds + identical fixture
+/// through its resolver and must produce the same partition.
+#[must_use]
+pub fn resolve_canonical_ids(names: &[&str]) -> HashMap<String, usize> {
+    let mut canon: Vec<(String, Vec<f32>)> = Vec::new();
+    let mut out: HashMap<String, usize> = HashMap::new();
+    for &name in names {
+        let emb = parity_name_vec(name);
+        let mut cands: Vec<(usize, f32)> = canon
+            .iter()
+            .enumerate()
+            .map(|(idx, (cn, _))| (idx, crate::ingest::pg_client::trgm_sim(name, cn)))
+            .collect();
+        cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut hit = None;
+        for (idx, ts) in cands {
+            if ts < TRGM_MERGE {
+                break;
+            }
+            if cosine(&emb, &canon[idx].1) >= COSINE_MERGE {
+                hit = Some(idx);
+                break;
+            }
+        }
+        let id = if let Some(idx) = hit {
+            idx
+        } else {
+            canon.push((name.to_string(), emb));
+            canon.len() - 1
+        };
+        out.insert(name.to_string(), id);
+    }
+    out
 }
 
 #[cfg(test)]

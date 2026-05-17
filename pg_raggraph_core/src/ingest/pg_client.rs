@@ -133,7 +133,7 @@ pub trait PgClient {
 
 /// Trigram-set Jaccard similarity. Simple in-memory analog of `pg_trgm`.
 /// The pgrx adapter (T23/`SpiPgClient`) delegates to real `pg_trgm`.
-fn trgm_sim(a: &str, b: &str) -> f32 {
+pub(crate) fn trgm_sim(a: &str, b: &str) -> f32 {
     fn trigrams(s: &str) -> std::collections::HashSet<String> {
         let s = format!("  {}  ", s.to_lowercase());
         let chars: Vec<char> = s.chars().collect();
