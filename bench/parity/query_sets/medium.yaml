@@ -1,0 +1,25 @@
+# SC-013: >=5 each of entity_anchored / keyword / semantic / hybrid_favored.
+# Queries target the synthetic corpus topics (postgres, pgvector, graphrag,
+# resolution, rrf) and FILL terms. Each has a rationale: which lane should win.
+tier: medium
+queries:
+  - {category: entity_anchored, q: "postgres",   rationale: "exact entity name; graph lane anchors on the 'postgres' canonical entity"}
+  - {category: entity_anchored, q: "pgvector",   rationale: "entity-anchored; graph neighbors via related_to spine"}
+  - {category: entity_anchored, q: "graphrag",   rationale: "entity-anchored; tests graph traversal from a hub topic"}
+  - {category: entity_anchored, q: "resolution", rationale: "entity-anchored; resolution topic entity"}
+  - {category: entity_anchored, q: "rrf",        rationale: "entity-anchored; smallest topic cluster, graph-lane sensitive"}
+  - {category: keyword, q: "IVFFlat",                 rationale: "rare literal token; BM25 lane should dominate"}
+  - {category: keyword, q: "recursive CTEs",          rationale: "multi-word exact phrase; BM25 term match"}
+  - {category: keyword, q: "trigram matching",        rationale: "literal keyword; lexical not semantic"}
+  - {category: keyword, q: "ACID guarantees",         rationale: "exact phrase appearing only in postgres docs"}
+  - {category: keyword, q: "k=60",                    rationale: "symbolic literal; pure lexical, no semantics"}
+  - {category: semantic, q: "how vectors enable similarity search",  rationale: "no exact tokens; vector lane should win"}
+  - {category: semantic, q: "combining graph and text retrieval",    rationale: "paraphrase of graphrag docs; semantic"}
+  - {category: semantic, q: "merging duplicate entity names",        rationale: "paraphrase of resolution; semantic"}
+  - {category: semantic, q: "blending ranked result lists",          rationale: "paraphrase of RRF; semantic"}
+  - {category: semantic, q: "durable transactional storage",         rationale: "paraphrase of postgres ACID; semantic"}
+  - {category: hybrid_favored, q: "pgvector similarity with recursive CTEs", rationale: "entity + keyword + semantic; multiple lanes contribute"}
+  - {category: hybrid_favored, q: "graphrag fusion at k=60",                 rationale: "entity + literal + concept; hybrid"}
+  - {category: hybrid_favored, q: "postgres HNSW vs IVFFlat tradeoffs",      rationale: "entity + two literals + concept; hybrid"}
+  - {category: hybrid_favored, q: "resolution thresholds for entity merge",  rationale: "entity + keyword + semantic; hybrid"}
+  - {category: hybrid_favored, q: "bge-small embeddings in hybrid mode",     rationale: "entity + literal + concept; all lanes"}
