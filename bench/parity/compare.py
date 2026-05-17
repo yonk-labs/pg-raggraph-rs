@@ -177,7 +177,8 @@ def main():
         ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         out = args.report or str(ROOT / f"results/{ts}-ablation.json")
         pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True)
-        json.dump(report, open(out, "w", encoding="utf-8"), indent=2)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2)
         print(f"ablation report={out}")
         raise SystemExit(0)
 
