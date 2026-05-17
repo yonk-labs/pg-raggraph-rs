@@ -1,0 +1,5 @@
+# SC-015: pinned, locked Python pg-raggraph for cross-impl parity.
+# Sibling repo: yonk-labs/pg-raggraph (the Python project; NOT this repo).
+# Changing this pin is an "Ask First" parity-run audit (brief Constraints).
+pg-raggraph==0.3.0a3
+pyyaml==6.0.2
