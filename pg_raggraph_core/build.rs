@@ -40,13 +40,13 @@ fn main() {
     let trgm = scan(&yaml, "trgm_merge");
     let cosine = scan(&yaml, "cosine_merge");
 
-    if (trgm - CANON_TRGM).abs() > f32::EPSILON {
+    if trgm.to_bits() != CANON_TRGM.to_bits() {
         panic!(
             "DRIFT: resolution_constants.yaml trgm_merge={trgm} != canonical \
              {CANON_TRGM}. Reconcile resolve.rs and the YAML in one commit."
         );
     }
-    if (cosine - CANON_COSINE).abs() > f32::EPSILON {
+    if cosine.to_bits() != CANON_COSINE.to_bits() {
         panic!(
             "DRIFT: resolution_constants.yaml cosine_merge={cosine} != canonical \
              {CANON_COSINE}. Reconcile resolve.rs and the YAML in one commit."

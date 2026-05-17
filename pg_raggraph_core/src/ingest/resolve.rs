@@ -6,15 +6,17 @@
 //! insufficient — this guards against name collisions across senses (e.g.,
 //! "Mercury" the planet vs the element).
 //!
-//! Thresholds are inlined as `const`. T22+ may move them to a config file
-//! if the constants need to be tuned across deployments without recompilation.
+//! Thresholds (`TRGM_MERGE`/`COSINE_MERGE`) are sourced at compile time from
+//! `bench/parity/resolution_constants.yaml` via `build.rs` (see
+//! `crate::parity_constants`). Changing them requires updating the YAML and
+//! the canonical literals in `build.rs` in the same commit (drift = build error).
 
 use uuid::Uuid;
 
 use crate::error::CoreResult;
 use crate::ingest::pg_client::{EntityRow, PgClient};
-
 use crate::parity_constants::{COSINE_MERGE, TRGM_MERGE};
+
 const TRGM_CANDIDATE_LIMIT: usize = 8;
 
 /// Resolve an extracted entity to an existing row or insert a new one.
@@ -86,9 +88,9 @@ mod parity_tests {
     #[test]
     fn resolution_constants_sourced_from_shared_yaml() {
         // SC-005: the canonical thresholds must equal the shared parity YAML.
-        assert_eq!(TRGM_MERGE, crate::parity_constants::TRGM_MERGE);
-        assert_eq!(COSINE_MERGE, crate::parity_constants::COSINE_MERGE);
-        // Behavior lock: values are still exactly the historical constants.
+        // The build FAILS before this test can even run if the YAML drifts from
+        // the canonical literals (see build.rs DRIFT panic). These asserts are the
+        // in-source behavior lock: the resolver still uses exactly 0.85 / 0.90.
         assert_eq!(TRGM_MERGE, 0.85_f32);
         assert_eq!(COSINE_MERGE, 0.90_f32);
     }
