@@ -63,7 +63,7 @@ jobs:
 
       - name: Start pgrx PG17 + create parity DB
         run: |
-          cargo pgrx start pg17
+          cargo pgrx start pg17 -p pg_raggraph
           PG_BIN=$(dirname "$(cargo pgrx info pg-config pg17)")
           $PG_BIN/createdb -h localhost -p 28817 pgrg_parity_test
           $PG_BIN/psql -h localhost -p 28817 pgrg_parity_test \
