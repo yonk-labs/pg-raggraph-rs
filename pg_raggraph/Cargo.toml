@@ -30,3 +30,4 @@ tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 pgrx-tests = { workspace = true }
+tempfile = "3"
