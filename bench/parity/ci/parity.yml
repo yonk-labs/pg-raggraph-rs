@@ -3,6 +3,8 @@
 # SC-014: compare.py exit code IS the gate (no human in the loop).
 # SC-015: pinned Python pg-raggraph installed from requirements.txt.
 # NOTE: bench/parity/requirements.txt is GATE-A (user supplies Python pin).
+# Uses pgrx-managed PG17 (same as ci.yml pgrx-test job) — extension is built
+# against pgrx's PG17, so the .so and the server must be the same build.
 name: parity
 on:
   pull_request:
@@ -13,14 +15,6 @@ on:
 jobs:
   parity:
     runs-on: ubuntu-latest
-    services:
-      pg:
-        image: pgvector/pgvector:pg17
-        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: pgrg_sidecar_test }
-        ports: ['5443:5432']
-        options: >-
-          --health-cmd "pg_isready -U postgres -d pgrg_sidecar_test"
-          --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            libreadline-dev zlib1g-dev libssl-dev libxml2-dev
+            libreadline-dev zlib1g-dev libssl-dev libxml2-dev libicu-dev bison flex
 
       - name: Install cargo-pgrx 0.17.0
         run: cargo install cargo-pgrx --version =0.17.0 --locked
@@ -55,10 +49,28 @@ jobs:
       - name: Init pgrx pg17
         run: cargo pgrx init --pg17 download
 
+      - name: Build pgvector against pgrx PG17
+        run: |
+          PGRX_PG_CONFIG=$(cargo pgrx info pg-config pg17)
+          git clone --branch v0.8.1 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          cd /tmp/pgvector
+          PG_CONFIG="$PGRX_PG_CONFIG" make
+          PG_CONFIG="$PGRX_PG_CONFIG" make install
+
       - name: Build + install pg_raggraph extension
         run: |
           cargo pgrx install --package pg_raggraph \
             --pg-config "$(cargo pgrx info pg-config pg17)"
+
+      - name: Start pgrx PG17 + create parity DB
+        run: |
+          cargo pgrx start pg17
+          PG_BIN=$(dirname "$(cargo pgrx info pg-config pg17)")
+          $PG_BIN/createdb -h localhost -p 28817 pgrg_parity_test
+          $PG_BIN/psql -h localhost -p 28817 pgrg_parity_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_raggraph CASCADE;"
 
       - name: Resolution parity (SC-005)
         run: cargo test -p pg_raggraph_core --test resolution_parity
@@ -96,7 +108,7 @@ jobs:
             --top-k 10 --mode hybrid --python lib \
             --report bench/parity/results/ci-${{ github.run_id }}.json
         env:
-          PGRG_RUST_DSN: postgresql://postgres:postgres@localhost:5443/pgrg_sidecar_test
+          PGRG_RUST_DSN: postgresql://localhost:28817/pgrg_parity_test
 
       - name: Upload parity report (SC-017 drift downloadable on red)
         if: always()
