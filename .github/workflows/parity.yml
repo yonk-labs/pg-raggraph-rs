@@ -43,6 +43,12 @@ jobs:
           python -m pip install -r bench/parity/requirements.txt
           pip show pg-raggraph | grep -E '^(Name|Version):'
 
+      - name: Install PostgreSQL build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libreadline-dev zlib1g-dev libssl-dev libxml2-dev
+
       - name: Install cargo-pgrx 0.17.0
         run: cargo install cargo-pgrx --version =0.17.0 --locked
 

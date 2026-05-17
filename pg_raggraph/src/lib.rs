@@ -340,10 +340,9 @@ mod tests {
         // PRIMARY assertion: pg_settings.context must be 'superuser' — this
         // definitively proves GucContext::Suset registration regardless of session
         // role mechanics.
-        let ctx: Option<String> = Spi::get_one(
-            "SELECT context FROM pg_settings WHERE name = 'pg_raggraph.parity_mode'",
-        )
-        .unwrap();
+        let ctx: Option<String> =
+            Spi::get_one("SELECT context FROM pg_settings WHERE name = 'pg_raggraph.parity_mode'")
+                .unwrap();
         assert_eq!(ctx.as_deref(), Some("superuser"), "expected Suset context");
 
         // SECONDARY (best-effort) assertion: a non-superuser SET must fail.
@@ -579,27 +578,28 @@ mod tests {
         let n = n.expect("ingest_extracted returns a row count");
         // 120 documents + 120 chunks + 120 entities + 120 chunk_entities +
         // 4 relationships = 484 records read from the header-stripped file.
-        assert_eq!(n, 484, "sc002: expected exactly 484 records (120 docs + 120 chunks + 120 entities + 120 chunk_entities + 4 rels), got {n}");
+        assert_eq!(
+            n, 484,
+            "sc002: expected exactly 484 records (120 docs + 120 chunks + 120 entities + 120 chunk_entities + 4 rels), got {n}"
+        );
 
         // Sanity: documents/chunks actually landed in the parity namespace.
-        let docs: Option<i64> = Spi::get_one(
-            "SELECT count(*) FROM pgrg.documents WHERE namespace='parity'",
-        )
-        .unwrap();
+        let docs: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.documents WHERE namespace='parity'").unwrap();
         assert_eq!(docs, Some(120), "120 documents expected");
-        let chunks: Option<i64> = Spi::get_one(
-            "SELECT count(*) FROM pgrg.chunks WHERE namespace='parity'",
-        )
-        .unwrap();
+        let chunks: Option<i64> =
+            Spi::get_one("SELECT count(*) FROM pgrg.chunks WHERE namespace='parity'").unwrap();
         assert_eq!(chunks, Some(120), "120 chunks expected");
         // Entities dedupe via ON CONFLICT (namespace, name, kind) to the
         // number of distinct topic words in the small corpus.
-        let entity_count: i64 = Spi::get_one(
-            "SELECT count(*) FROM pgrg.entities WHERE namespace='parity'",
-        )
-        .unwrap()
-        .expect("entity count query returned NULL");
-        assert_eq!(entity_count, 5, "sc002: expected 5 distinct topic entities after ON CONFLICT dedup, got {entity_count}");
+        let entity_count: i64 =
+            Spi::get_one("SELECT count(*) FROM pgrg.entities WHERE namespace='parity'")
+                .unwrap()
+                .expect("entity count query returned NULL");
+        assert_eq!(
+            entity_count, 5,
+            "sc002: expected 5 distinct topic entities after ON CONFLICT dedup, got {entity_count}"
+        );
     }
 
     fn load_minimal_fixture_for_query(ns: &str) {
@@ -2445,10 +2445,7 @@ mod tests {
         std::fs::copy(src, dest).expect("sc011: cannot copy undirected fixture");
 
         Spi::run("SELECT pgrg.namespace_create('undir')").unwrap();
-        Spi::run(&format!(
-            "SELECT pgrg.ingest_extracted('{dest}', 'undir')"
-        ))
-        .unwrap();
+        Spi::run(&format!("SELECT pgrg.ingest_extracted('{dest}', 'undir')")).unwrap();
 
         // Seeded at A: must reach B's chunk via 1-hop graph traversal
         // (forward direction src_id=A -> dst_id=B).

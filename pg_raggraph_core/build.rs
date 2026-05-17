@@ -34,8 +34,8 @@ fn main() {
     println!("cargo:rerun-if-changed={yaml_path}");
     println!("cargo:rerun-if-changed=src/ingest/resolve.rs");
 
-    let yaml = fs::read_to_string(yaml_path)
-        .unwrap_or_else(|e| panic!("cannot read {yaml_path}: {e}"));
+    let yaml =
+        fs::read_to_string(yaml_path).unwrap_or_else(|e| panic!("cannot read {yaml_path}: {e}"));
 
     let trgm = scan(&yaml, "trgm_merge");
     let cosine = scan(&yaml, "cosine_merge");
