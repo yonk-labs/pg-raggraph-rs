@@ -14,8 +14,7 @@ use uuid::Uuid;
 use crate::error::CoreResult;
 use crate::ingest::pg_client::{EntityRow, PgClient};
 
-const TRGM_MERGE: f32 = 0.85;
-const COSINE_MERGE: f32 = 0.90;
+use crate::parity_constants::{COSINE_MERGE, TRGM_MERGE};
 const TRGM_CANDIDATE_LIMIT: usize = 8;
 
 /// Resolve an extracted entity to an existing row or insert a new one.
@@ -77,5 +76,20 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot / (na * nb)
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+
+    #[test]
+    fn resolution_constants_sourced_from_shared_yaml() {
+        // SC-005: the canonical thresholds must equal the shared parity YAML.
+        assert_eq!(TRGM_MERGE, crate::parity_constants::TRGM_MERGE);
+        assert_eq!(COSINE_MERGE, crate::parity_constants::COSINE_MERGE);
+        // Behavior lock: values are still exactly the historical constants.
+        assert_eq!(TRGM_MERGE, 0.85_f32);
+        assert_eq!(COSINE_MERGE, 0.90_f32);
     }
 }

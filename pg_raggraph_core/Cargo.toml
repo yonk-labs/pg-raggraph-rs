@@ -2,6 +2,7 @@
 name = "pg_raggraph_core"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 license.workspace = true
 repository.workspace = true
 

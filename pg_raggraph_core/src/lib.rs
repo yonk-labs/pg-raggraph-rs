@@ -9,6 +9,7 @@ pub mod embedding;
 pub mod error;
 pub mod ingest;
 pub mod llm;
+pub mod parity_constants;
 pub mod retrieval;
 pub mod types;
 
