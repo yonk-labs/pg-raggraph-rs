@@ -2421,6 +2421,64 @@ mod tests {
              real-PG pipeline; got {acme_entities:?}"
         );
     }
+
+    #[pg_test]
+    fn sc011_graph_traversal_is_undirected() {
+        // SC-011: A->B directional relationship (src_id=A, dst_id=B). A graph
+        // query seeded at A must reach B's chunk, and a query seeded at B
+        // must reach A's chunk. This proves the recursive-CTE walker is
+        // undirected (it UNION ALLs both directions, per spec §10).
+        //
+        // Resolve from the workspace root regardless of the harness cwd:
+        // CARGO_MANIFEST_DIR is <repo>/pg_raggraph; the fixture lives at
+        // <repo>/bench/parity/undirected_fixture.jsonl.
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../bench/parity/undirected_fixture.jsonl"
+        );
+        assert!(
+            std::path::Path::new(src).exists(),
+            "sc011: fixture not found at {src}"
+        );
+
+        let dest = "/tmp/pgrg_undir.jsonl";
+        std::fs::copy(src, dest).expect("sc011: cannot copy undirected fixture");
+
+        Spi::run("SELECT pgrg.namespace_create('undir')").unwrap();
+        Spi::run(&format!(
+            "SELECT pgrg.ingest_extracted('{dest}', 'undir')"
+        ))
+        .unwrap();
+
+        // Seeded at A: must reach B's chunk via 1-hop graph traversal
+        // (forward direction src_id=A -> dst_id=B).
+        let from_a: i64 = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('EntityA', NULL, 10, 'undir', 1, \
+             NULL, 'graph') WHERE text LIKE '%B-only%'",
+        )
+        .unwrap()
+        .unwrap_or(0);
+
+        // Seeded at B: must reach A's chunk (reverse direction
+        // dst_id=B -> src_id=A — the undirected leg).
+        let from_b: i64 = Spi::get_one(
+            "SELECT count(*) FROM pgrg.query('EntityB', NULL, 10, 'undir', 1, \
+             NULL, 'graph') WHERE text LIKE '%A-only%'",
+        )
+        .unwrap()
+        .unwrap_or(0);
+
+        assert!(
+            from_a >= 1,
+            "sc011: A-> query did not reach B's chunk (undirected check \
+             failed; traversal may be directional); from_a={from_a}"
+        );
+        assert!(
+            from_b >= 1,
+            "sc011: B-> query did not reach A's chunk (undirected check \
+             failed; traversal may be directional); from_b={from_b}"
+        );
+    }
 }
 
 #[cfg(test)]
