@@ -1,6 +1,6 @@
 //! Compile-time bridge for the shared cross-impl resolution constants.
-//! Reads ../bench/parity/resolution_constants.yaml (flat `key: value`),
-//! emits OUT_DIR/parity_constants_gen.rs. A value that disagrees with the
+//! Reads `../bench/parity/resolution_constants.yaml` (flat `key: value`),
+//! emits `OUT_DIR/parity_constants_gen.rs`. A value that disagrees with the
 //! canonical Rust literals below is a BUILD ERROR — that IS the spec §10
 //! "drift between the two files is a build-time error" guarantee.
 
@@ -17,13 +17,13 @@ fn scan(yaml: &str, key: &str) -> f32 {
         if line.starts_with('#') || line.is_empty() {
             continue;
         }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim() == key {
-                return v
-                    .trim()
-                    .parse::<f32>()
-                    .unwrap_or_else(|_| panic!("parity yaml: `{key}` not a float"));
-            }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim() == key
+        {
+            return v
+                .trim()
+                .parse::<f32>()
+                .unwrap_or_else(|_| panic!("parity yaml: `{key}` not a float"));
         }
     }
     panic!("parity yaml: key `{key}` not found");
@@ -40,18 +40,16 @@ fn main() {
     let trgm = scan(&yaml, "trgm_merge");
     let cosine = scan(&yaml, "cosine_merge");
 
-    if trgm.to_bits() != CANON_TRGM.to_bits() {
-        panic!(
-            "DRIFT: resolution_constants.yaml trgm_merge={trgm} != canonical \
-             {CANON_TRGM}. Reconcile resolve.rs and the YAML in one commit."
-        );
-    }
-    if cosine.to_bits() != CANON_COSINE.to_bits() {
-        panic!(
-            "DRIFT: resolution_constants.yaml cosine_merge={cosine} != canonical \
-             {CANON_COSINE}. Reconcile resolve.rs and the YAML in one commit."
-        );
-    }
+    assert!(
+        trgm.to_bits() == CANON_TRGM.to_bits(),
+        "DRIFT: resolution_constants.yaml trgm_merge={trgm} != canonical \
+         {CANON_TRGM}. Reconcile resolve.rs and the YAML in one commit."
+    );
+    assert!(
+        cosine.to_bits() == CANON_COSINE.to_bits(),
+        "DRIFT: resolution_constants.yaml cosine_merge={cosine} != canonical \
+         {CANON_COSINE}. Reconcile resolve.rs and the YAML in one commit."
+    );
 
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("parity_constants_gen.rs");
     fs::write(
