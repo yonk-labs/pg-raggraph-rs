@@ -1,0 +1,18 @@
+# SC-001 corpus manifest. Each document carries a stable content_hash
+# (sha256 of text) and a source attribution URI.
+generator: bench/parity/corpus/gen_corpus.py
+seed_scheme: "pgrg-parity-<tier>-v1 (fixed; regeneration is byte-stable)"
+source: synthetic public-domain technical prose (no external licensing)
+tiers:
+  small:
+    docs: 120
+    committed: true
+    path: bench/parity/corpus/small/docs.jsonl
+  medium:
+    docs: 1000
+    committed: false   # generated; see extracted/GENERATION.md (HONEST: not in repo)
+    path: bench/parity/corpus/medium/docs.jsonl
+  large:
+    docs: 10000
+    committed: false   # generated; CI regenerates on tag (SC-007)
+    path: bench/parity/corpus/large/docs.jsonl
