@@ -579,7 +579,7 @@ mod tests {
         let n = n.expect("ingest_extracted returns a row count");
         // 120 documents + 120 chunks + 120 entities + 120 chunk_entities +
         // 4 relationships = 484 records read from the header-stripped file.
-        assert!(n > 360, "expected >360 records loaded (120*4 + rels), got {n}");
+        assert_eq!(n, 484, "sc002: expected exactly 484 records (120 docs + 120 chunks + 120 entities + 120 chunk_entities + 4 rels), got {n}");
 
         // Sanity: documents/chunks actually landed in the parity namespace.
         let docs: Option<i64> = Spi::get_one(
@@ -594,11 +594,12 @@ mod tests {
         assert_eq!(chunks, Some(120), "120 chunks expected");
         // Entities dedupe via ON CONFLICT (namespace, name, kind) to the
         // number of distinct topic words in the small corpus.
-        let ents: Option<i64> = Spi::get_one(
+        let entity_count: i64 = Spi::get_one(
             "SELECT count(*) FROM pgrg.entities WHERE namespace='parity'",
         )
-        .unwrap();
-        assert!(ents.unwrap() >= 1, "topic entities expected (deduped)");
+        .unwrap()
+        .expect("entity count query returned NULL");
+        assert_eq!(entity_count, 5, "sc002: expected 5 distinct topic entities after ON CONFLICT dedup, got {entity_count}");
     }
 
     fn load_minimal_fixture_for_query(ns: &str) {

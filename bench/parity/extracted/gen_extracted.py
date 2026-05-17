@@ -39,7 +39,8 @@ def main():
     a = ap.parse_args()
     ns = "parity"
 
-    docs = [json.loads(l) for l in open(a.corpus, encoding="utf-8")]
+    with open(a.corpus, encoding="utf-8") as fh:
+        docs = [json.loads(l) for l in fh]
     with open(a.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps({
             "kind": "_header",
@@ -80,8 +81,7 @@ def main():
                 "kind": "chunk_entity", "chunk_id": cid, "entity_id": eid,
                 "confidence": 1.0, "classification": "extracted",
             }) + "\n")
-        topics = sorted({json.loads(l)["title"].split()[0]
-                         for l in open(a.corpus, encoding="utf-8")})
+        topics = sorted({d["title"].split()[0] for d in docs})
         for i in range(len(topics) - 1):
             f.write(json.dumps({
                 "kind": "relationship",
