@@ -120,7 +120,7 @@ pub fn resolve_canonical_ids(names: &[&str]) -> HashMap<String, usize> {
             .enumerate()
             .map(|(idx, (cn, _))| (idx, crate::ingest::pg_client::trgm_sim(name, cn)))
             .collect();
-        cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        cands.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut hit = None;
         for (idx, ts) in cands {
             if ts < TRGM_MERGE {
@@ -147,6 +147,13 @@ mod parity_tests {
     use super::*;
 
     #[test]
+    // Exact-equality is intentional: build.rs emits these as exact `f32` literals
+    // from resolution_constants.yaml. An epsilon comparison would weaken the
+    // SC-005 drift lock — any accumulated round-trip error is a real bug here.
+    // The allow is function-scoped (not crate-wide) because clippy::float_cmp
+    // fires inside the assert_eq! macro expansion and is not suppressed by a
+    // statement attribute.
+    #[allow(clippy::float_cmp)]
     fn resolution_constants_sourced_from_shared_yaml() {
         // SC-005: the canonical thresholds must equal the shared parity YAML.
         // The build FAILS before this test can even run if the YAML drifts from

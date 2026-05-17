@@ -81,6 +81,10 @@ fn variant_fixture() -> Vec<(&'static str, &'static str)> {
 }
 
 #[test]
+// intentional: exact-by-construction drift lock; see resolve.rs. The allow is
+// function-scoped (not crate-wide) because clippy::float_cmp fires inside the
+// assert_eq! macro expansion and is not suppressed by a statement attribute.
+#[allow(clippy::float_cmp)]
 fn sc005_canonical_ids_match_shared_contract() {
     assert_eq!(TRGM_MERGE, 0.85_f32);
     assert_eq!(COSINE_MERGE, 0.90_f32);
