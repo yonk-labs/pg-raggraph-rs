@@ -64,12 +64,16 @@ jobs:
         run: cargo test -p pg_raggraph_core --test resolution_parity
 
       - name: Embedding artifact precheck (SC-008)
-        # In full cross-impl CI: provide real model paths via secrets.
-        # For smoke verification, point both flags at the same file (identity guard trivially passes).
+        # In full cross-impl CI: set FE_PATH + CS_PATH secrets to real ONNX blobs.
+        # Smoke path: create identical dummy blobs so identity guard trivially passes.
         run: |
+          : "${FE_PATH:=/tmp/model.onnx}"
+          : "${CS_PATH:=/tmp/model.onnx}"
+          [ -f "$FE_PATH" ] || printf 'onnx-smoke-placeholder' > "$FE_PATH"
+          [ -f "$CS_PATH" ] || printf 'onnx-smoke-placeholder' > "$CS_PATH"
           python bench/parity/precheck.py \
-            --fastembed "${FE_PATH:-/tmp/model.onnx}" \
-            --chunkshop "${CS_PATH:-/tmp/model.onnx}"
+            --fastembed "$FE_PATH" \
+            --chunkshop "$CS_PATH"
         continue-on-error: false
 
       - name: Generate tier corpus + fixtures (SC-001/002)
