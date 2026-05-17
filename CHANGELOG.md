@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.0-rc.1] — 2026-05-17
+
+Plan 6: Cross-implementation parity harness — closing gate before v1.
+
+### Added
+- `bench/parity/` harness: frozen-graph corpus (small tier committed; medium/large generated), extracted JSONL fixtures, per-tier query sets (5×4 categories), `compare.py` driver (machine verdict via exit code), `metrics.md`, `precheck.py` (ONNX artifact-identity guard), `undirected_fixture.jsonl`, `ci/parity.yml` + `.github/workflows/parity.yml` (SC-001..017)
+- `bench/parity/resolution_constants.yaml` — shared TRGM/cosine constants; Rust sources at build time via dependency-free `pg_raggraph_core/build.rs`; drift vs. `resolve.rs` = build error (SC-005)
+- `pg_raggraph_core/tests/resolution_parity.rs` — 50-variant cross-impl canonical-id test; 0 drift (DC-003)
+- `#[pg_test] sc012_parity_mode_guc_is_suset` — regression locks `pg_raggraph.parity_mode` as `Suset` (folded deferred Plan 1 concern; DC-005 re-verifies Plan 2 SC-009 green)
+- `#[pg_test] sc011_graph_traversal_is_undirected` — proves UNION ALL both directions in 1-hop traversal (SC-011)
+- `#[pg_test] sc002_parity_small_fixture_loads_via_real_loader` — fixture schema validated against real Rust loader
+
+### Pending (GATE-A)
+- `bench/parity/requirements.txt` (SC-015) — requires user to supply pinned `pg-raggraph` version from sibling repo `yonk-labs/pg-raggraph` before executing T9
+
+### Changed
+- `pg_raggraph_core/src/ingest/resolve.rs`: `TRGM_MERGE`/`COSINE_MERGE` now sourced from shared YAML (behavior unchanged; build-time drift guard added)
+
 ## [0.1.0-alpha.5] — 2026-05-16
 
 Plan 5: Sidecar binary for managed PostgreSQL.

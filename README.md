@@ -101,6 +101,23 @@ shim needs a Supabase-flavored PostgreSQL (`pg_net` is not on stock
 images); validate the live `pg_net` egress path on your real managed-PG
 instance. The HTTP `/v1/ask` path has no such dependency.
 
+## Cross-implementation parity
+
+The `bench/parity/` harness ensures the Rust extension and the Python [`pg-raggraph`](https://github.com/yonk-labs/pg-raggraph) library produce equivalent retrieval results.
+
+**Bar (machine-decidable):** top-k Jaccard ≥ 0.8, `mode='hybrid'`, `top_k=10`, IVFFlat index.
+
+```bash
+# Run the parity harness (requires pg_raggraph-enabled Postgres)
+python bench/parity/compare.py --tier small \
+  --queries bench/parity/query_sets/small.yaml \
+  --python lib --report bench/parity/results/result.json
+```
+
+CI enforces: small tier on PR, medium on main push, large on tag (exit code = gate).
+
+See [`bench/parity/metrics.md`](bench/parity/metrics.md) for full methodology.
+
 ## License
 
 Apache-2.0. See `LICENSE`.
