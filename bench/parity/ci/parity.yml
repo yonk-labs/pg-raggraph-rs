@@ -64,6 +64,9 @@ jobs:
 
       - name: Start pgrx PG17 + create parity DB
         run: |
+          # pg_raggraph has PGC_POSTMASTER GUCs — must be in shared_preload_libraries
+          # (pgrx test framework sets this automatically; we do it manually here).
+          echo "shared_preload_libraries = 'pg_raggraph'" >> ~/.pgrx/data-17/postgresql.conf
           cargo pgrx start pg17 -p pg_raggraph
           PG_BIN=$(dirname "$(cargo pgrx info pg-config pg17)")
           $PG_BIN/createdb -h localhost -p 28817 pgrg_parity_test
